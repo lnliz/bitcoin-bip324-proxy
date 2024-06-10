@@ -1,0 +1,34 @@
+name: Go
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        go-version: [ '1.22', '1.21', '1.20' ]
+
+    steps:
+    - name: go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ matrix.go-version }}
+        cache-dependency-path: "**/go.sum"
+
+    - name: checkout
+      uses: actions/checkout@v3
+
+    - name: deps
+      run: go mod tidy
+
+    - name: tests
+      run: make test
+
