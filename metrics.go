@@ -24,11 +24,13 @@ var (
 		Name:        "connections_out_errors",
 		Help:        "connections_out_errors",
 		ConstLabels: nil,
-	}, nil)
+	}, []string{"version"})
 
 	metricProxyConnectionsV1Fallbacks *prometheus.CounterVec
-	messagesReceived                  *prometheus.CounterVec
-	messagesSent                      *prometheus.CounterVec
+	metricMessagesReceived            *prometheus.CounterVec
+	metricMessagesSent                *prometheus.CounterVec
+	metricBytesSent                   *prometheus.CounterVec
+	metricBytesReceived               *prometheus.CounterVec
 )
 
 func initMetrics(metricsInclPeerInfo bool) {
@@ -52,23 +54,44 @@ func initMetrics(metricsInclPeerInfo bool) {
 		ConstLabels: nil,
 	}, nil)
 
-	messagesReceived = prometheus.NewCounterVec(prometheus.CounterOpts{
+	metricMessagesReceived = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   namespace,
 		Name:        "messages_received",
 		Help:        "messages_received",
 		ConstLabels: nil,
 	}, lbls)
 
-	messagesSent = prometheus.NewCounterVec(prometheus.CounterOpts{
+	metricMessagesSent = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   namespace,
 		Name:        "messages_sent",
 		Help:        "messages_sent",
 		ConstLabels: nil,
 	}, lbls)
 
+	metricBytesReceived = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   namespace,
+		Name:        "bytes_received_total",
+		Help:        "bytes_received_total",
+		ConstLabels: nil,
+	}, lbls)
+
+	metricBytesSent = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   namespace,
+		Name:        "bytes_sent_total",
+		Help:        "bytes_sent_total",
+		ConstLabels: nil,
+	}, lbls)
+
+	// node_network_transmit_bytes_total
+
 	prometheus.MustRegister(metricProxyConnectionsIn)
-	prometheus.MustRegister(messagesReceived)
-	prometheus.MustRegister(messagesSent)
+	prometheus.MustRegister(metricProxyConnectionsOut)
+	prometheus.MustRegister(metricProxyConnectionsOutErrors)
+	prometheus.MustRegister(metricProxyConnectionsV1Fallbacks)
+	prometheus.MustRegister(metricMessagesReceived)
+	prometheus.MustRegister(metricMessagesSent)
+	prometheus.MustRegister(metricBytesSent)
+	prometheus.MustRegister(metricBytesReceived)
 }
 
 func (c *ConnectionHandler) metricMsgReceived(v string, t string, dir string) {
@@ -80,7 +103,7 @@ func (c *ConnectionHandler) metricMsgReceived(v string, t string, dir string) {
 	if c.metricsInclPeer {
 		lbls["peer"] = c.peerRemoteAddr
 	}
-	messagesReceived.With(lbls).Inc()
+	metricMessagesReceived.With(lbls).Inc()
 }
 
 func (c *ConnectionHandler) metricMsgSent(v string, t string, dir string) {
@@ -92,5 +115,5 @@ func (c *ConnectionHandler) metricMsgSent(v string, t string, dir string) {
 	if c.metricsInclPeer {
 		lbls["peer"] = c.peerRemoteAddr
 	}
-	messagesSent.With(lbls).Inc()
+	metricMessagesSent.With(lbls).Inc()
 }

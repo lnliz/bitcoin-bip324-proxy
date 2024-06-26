@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -44,9 +45,8 @@ func startProxyListener(name string, addr string, peer string, netMagic []byte, 
 	}
 	defer listener.Close()
 
-	log.Printf("%s listening on %s", name, addr)
+	log.Printf("Listening on %s and %s", addr, name)
 
-	conId := 0
 	for {
 		clientConn, err := listener.AcceptTCP()
 		if err != nil {
@@ -55,10 +55,8 @@ func startProxyListener(name string, addr string, peer string, netMagic []byte, 
 		}
 		metricProxyConnectionsIn.WithLabelValues().Inc()
 
-		conId += 1
 		con := ConnectionHandler{
 			useRemoteAddr:   peer,
-			conId:           conId,
 			connLocal:       clientConn,
 			v1ProtocolOnly:  v1ProtoOnly,
 			v2ProtocolOnly:  v2ProtoOnly,
@@ -109,9 +107,11 @@ func main() {
 				addr := fmt.Sprintf("%s:%d", *flagPeersAddr, port)
 				port += 1
 				name := fmt.Sprintf("Direct proxy to %s", peer)
-				go func(a string) {
-					startProxyListener(name, a, peer, nm, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo)
-				}(addr)
+				go func(a string, p string) {
+					startProxyListener(name, a, p, nm, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo)
+				}(addr, peer)
+
+				time.Sleep(100 * time.Millisecond)
 			}
 		}
 	}

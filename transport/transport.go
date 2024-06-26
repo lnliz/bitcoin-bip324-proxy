@@ -167,7 +167,7 @@ func (t *V2Transport) V2Handshake(isInit bool) error {
 
 	if isInit {
 		if err := SendData(t.remoteCon, t.SendAadAndGarbage); err != nil {
-			return err
+			return fmt.Errorf("SendData(SendAadAndGarbage) err: %w", err)
 		}
 	}
 
@@ -175,36 +175,36 @@ func (t *V2Transport) V2Handshake(isInit bool) error {
 		receive their ellswift key and initialize our cipher
 	*/
 	if err := t.recvTheirEllswiftPubKey(isInit); err != nil {
-		return err
+		return fmt.Errorf("recvTheirEllswiftPubKey() err: %w", err)
 	}
 
 	if isInit {
 		if err := SendData(t.remoteCon, t.cipher.SendGarbageTerminator); err != nil {
-			return err
+			return fmt.Errorf("SendData(SendGarbageTerminator) err: %w", err)
 		}
 
 		if _, err := t.MaybeSendDecoyPackets(); err != nil {
-			return err
+			return fmt.Errorf("MaybeSendDecoyPackets() err: %w", err)
 		}
 
 		if err := t.lookForGarbage(t.remoteCon); err != nil {
-			return err
+			return fmt.Errorf("lookForGarbage() err: %w", err)
 		}
 	} else {
 		if err := t.lookForGarbage(t.remoteCon); err != nil {
-			return err
+			return fmt.Errorf("lookForGarbage() err: %w", err)
 		}
 
 		if err := SendData(t.remoteCon, t.SendAadAndGarbage); err != nil {
-			return err
+			return fmt.Errorf("SendData(SendAadAndGarbage) err: %w", err)
 		}
 
 		if err := SendData(t.remoteCon, t.cipher.SendGarbageTerminator); err != nil {
-			return err
+			return fmt.Errorf("SendData(SendGarbageTerminator) err: %w", err)
 		}
 
 		if _, err := t.MaybeSendDecoyPackets(); err != nil {
-			return err
+			return fmt.Errorf("MaybeSendDecoyPackets() err: %w", err)
 		}
 	}
 
@@ -213,19 +213,19 @@ func (t *V2Transport) V2Handshake(isInit bool) error {
 	*/
 	if isInit {
 		if err := t.receiveAndCheckTransportVersion(); err != nil {
-			return err
+			return fmt.Errorf("receiveAndCheckTransportVersion() err: %w", err)
 		}
 
 		if err := t.SendBip324Packet(t.remoteCon, bip324_crypto.TransportVersion, false); err != nil {
-			return err
+			return fmt.Errorf("SendBip324Packet(TransportVersion) err: %w", err)
 		}
 	} else {
 		if err := t.SendBip324Packet(t.remoteCon, bip324_crypto.TransportVersion, false); err != nil {
-			return err
+			return fmt.Errorf("SendBip324Packet(TransportVersion) err: %w", err)
 		}
 
 		if err := t.receiveAndCheckTransportVersion(); err != nil {
-			return err
+			return fmt.Errorf("receiveAndCheckTransportVersion() err: %w", err)
 		}
 	}
 

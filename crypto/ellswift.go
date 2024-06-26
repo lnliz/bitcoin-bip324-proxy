@@ -309,7 +309,8 @@ func TaggedHash(tag string, data []byte) []byte {
 	tagHash := sha256.Sum256([]byte(tag))
 	doubleTagHash := append(tagHash[:], tagHash[:]...)
 	combinedData := append(doubleTagHash[:], data...)
-	return sha256.Sum256(combinedData)
+	res := sha256.Sum256(combinedData)
+	return res[:]
 }
 
 // Decode field elements (u, t) to an X coordinate on the curve
