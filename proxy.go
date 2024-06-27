@@ -27,6 +27,10 @@ type ConnectionHandler struct {
 	connLocal net.Conn
 }
 
+const (
+	v1HeaderLength = 24
+)
+
 func (c *ConnectionHandler) Logf(msg string, args ...interface{}) {
 	log.Printf(fmt.Sprintf("conId: %d -> ", c.conId)+msg, args...)
 }
@@ -76,7 +80,7 @@ func (c *ConnectionHandler) handleLocalConnection() {
 		}
 	}
 
-	remainingBytesLen := 24 - len(header)
+	remainingBytesLen := v1HeaderLength - len(header)
 	remainingBytes, err := bip324_transport.ReadData(c.connLocal, remainingBytesLen)
 	if err != nil {
 		c.Logf("read remainingBytesLen err: %s", err)
@@ -215,7 +219,7 @@ func (c *ConnectionHandler) RecvV1MessageWithHeader(header []byte, nc net.Conn) 
 }
 
 func (c *ConnectionHandler) RecvV1Message(conn net.Conn) (*bip324_transport.P2pMessage, error) {
-	header, err := bip324_transport.ReadData(conn, 24)
+	header, err := bip324_transport.ReadData(conn, v1HeaderLength)
 	if err != nil {
 		return nil, fmt.Errorf("Error reading header: %w", err)
 	}
