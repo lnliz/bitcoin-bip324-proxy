@@ -96,9 +96,9 @@ func initMetrics(metricsInclPeerInfo bool) {
 
 func (c *ConnectionHandler) metricMsgReceived(v string, t string, dir string) {
 	lbls := prometheus.Labels{
-		"direction": dir,
-		"type":      t,
 		"version":   v,
+		"type":      t,
+		"direction": dir,
 	}
 	if c.metricsInclPeer {
 		lbls["peer"] = c.peerRemoteAddr

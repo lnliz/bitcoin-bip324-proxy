@@ -37,30 +37,13 @@ func (c *ConnectionHandler) InitTransport(peerConn net.Conn) error {
 	return err
 }
 
-func (c *ConnectionHandler) tryV2Handshake(lastV1Message *bip324_transport.P2pMessage) error {
-	c.Logf("tryV2Handshake")
-
-	if err := c.transport.V2Handshake(true); err != nil {
-		c.Logf("V2Handshake() err: %s", err)
-		return err
-	}
-
-	if err := c.transport.SendV2Message(lastV1Message); err != nil {
-		c.Logf("c.SendV2Message(lastV1Message) err: %s", err)
-		return err
-	}
-
-	c.Logf("tryV2Handshake - success")
-	return nil
-}
-
 var (
 	conId atomic.Uint64
 )
 
 func (c *ConnectionHandler) handleLocalConnection() {
 	/*
-		first, get a new connection ID for logging
+		first, get new connection ID for logging
 	*/
 	c.conId = conId.Add(1)
 
@@ -130,7 +113,7 @@ func (c *ConnectionHandler) handleLocalConnection() {
 	peerConn, err := net.Dial("tcp", remoteAddr)
 	if err != nil {
 		metricProxyConnectionsOutErrors.WithLabelValues("v2").Inc()
-		log.Println("Error connecting to destination:", err)
+		c.Logf("Error connecting to destination:", err)
 		return
 	}
 	defer peerConn.Close()
@@ -147,13 +130,15 @@ func (c *ConnectionHandler) handleLocalConnection() {
 	if c.v1ProtocolOnly {
 		gotV2Connection = false
 	} else {
-		if err := c.tryV2Handshake(v1Msg); err != nil {
+		c.Logf("try V2Handshake")
+
+		if err := c.transport.V2Handshake(true); err != nil {
 			gotV2Connection = false
-			c.Logf("tryV2Handshake err: %s", err)
+			c.Logf("transport.V2Handshake() err: %s", err)
 
 			peerConn.Close()
 			if c.v2ProtocolOnly {
-				log.Printf("no fallback to v1, disconnecting")
+				c.Logf("no fallback to v1, disconnecting")
 				return
 			}
 
@@ -161,7 +146,7 @@ func (c *ConnectionHandler) handleLocalConnection() {
 			peerConn, err = net.Dial("tcp", remoteAddr)
 			if err != nil {
 				metricProxyConnectionsOutErrors.WithLabelValues("v1").Inc()
-				log.Printf("failed to re-connect")
+				c.Logf("failed to re-connect")
 				return
 			}
 			c.Logf("reconnected to %s", remoteAddr)
@@ -170,17 +155,31 @@ func (c *ConnectionHandler) handleLocalConnection() {
 			c.Logf("falling back to v1")
 
 			if err := c.SendV1Message(peerConn, v1Msg); err != nil {
-				log.Printf("Send v1 message err: %s", err)
+				c.Logf("Send v1 message err: %s", err)
 				return
 			}
 		}
 	}
 
 	if gotV2Connection {
+		c.Logf("Starting v2 connection")
 		metricProxyConnectionsOut.WithLabelValues("v2").Inc()
+
+		if err := c.transport.SendV2Message(v1Msg); err != nil {
+			c.Logf("c.SendV2Message(lastV1Message) err: %s", err)
+			return
+		}
+
 		c.v2MainLoop()
 	} else {
+		c.Logf("Starting v1 connection")
 		metricProxyConnectionsOut.WithLabelValues("v1").Inc()
+
+		if err := c.SendV1Message(peerConn, v1Msg); err != nil {
+			c.Logf("SendV1Message err: %s", err)
+			return
+		}
+
 		c.v1MainLoop(peerConn)
 	}
 }
@@ -224,32 +223,44 @@ func (c *ConnectionHandler) RecvV1Message(conn net.Conn) (*bip324_transport.P2pM
 	return c.RecvV1MessageWithHeader(header, conn)
 }
 
+func (c *ConnectionHandler) v1MainLoop(remoteConn net.Conn) {
+	c.Logf("v1MainLoop")
+	c.mainLoop(false, remoteConn)
+}
+
 func (c *ConnectionHandler) v2MainLoop() {
 	c.Logf("v2MainLoop")
+	c.mainLoop(true, nil)
+}
 
+func (c *ConnectionHandler) mainLoop(remoteIsV2 bool, v1RemotePeerCon net.Conn) {
 	chanSendToLocal := make(chan *bip324_transport.P2pMessage)
 	chanSendToRemote := make(chan *bip324_transport.P2pMessage)
 	errChan := make(chan error)
 
+	remoteProtoVersion := "v1"
+	if remoteIsV2 {
+		remoteProtoVersion = "v2"
+	}
+
 	go func() {
 		for {
-			msg, err := c.transport.RecvV2Message()
+			var msg *bip324_transport.P2pMessage
+			var err error
+
+			if remoteIsV2 {
+				msg, err = c.transport.RecvV2Message()
+			} else {
+				msg, err = c.RecvV1Message(v1RemotePeerCon)
+			}
 			if err != nil {
 				c.Logf("c.RecvV2Message() err: %s", err)
 				errChan <- err
 				close(chanSendToLocal)
 				return
 			}
-			c.metricMsgReceived("v2", msg.Type, "remote")
-
+			c.metricMsgReceived(remoteProtoVersion, msg.Type, "remote")
 			chanSendToLocal <- msg
-
-			/*
-				if err := c.SendV1Message(c.connLocal, msg); err != nil {
-					c.Logf("SendV1Message() err: %s", err)
-				}
-				c.metricMsgSent("v1", msg.Type, "local")
-			*/
 		}
 	}()
 
@@ -265,15 +276,6 @@ func (c *ConnectionHandler) v2MainLoop() {
 			c.metricMsgReceived("v1", msg.Type, "local")
 
 			chanSendToRemote <- msg
-
-			/*
-				if err := c.transport.SendV2Message(msg); err != nil {
-					c.Logf("SendV2Message(connRemote) err: %s", err)
-					errCh <- err
-					return
-				}
-				c.metricMsgSent("v2", msg.Type, "remote")
-			*/
 		}
 	}()
 
@@ -299,12 +301,20 @@ func (c *ConnectionHandler) v2MainLoop() {
 				errChan <- fmt.Errorf("chanSendToRemote closed")
 				break
 			}
-			if err := c.transport.SendV2Message(msg); err != nil {
-				c.Logf("SendV2Message(connRemote) err: %s", err)
-				errChan <- err
-				break
+			if remoteIsV2 {
+				if err := c.transport.SendV2Message(msg); err != nil {
+					c.Logf("SendV2Message(connRemote) err: %s", err)
+					errChan <- err
+					break
+				}
+			} else {
+				if err := c.SendV1Message(v1RemotePeerCon, msg); err != nil {
+					c.Logf("SendV1Message(v1RemotePeerCon) err: %s", err)
+					errChan <- err
+					return
+				}
 			}
-			c.metricMsgSent("v2", msg.Type, "remote")
+			c.metricMsgSent(remoteProtoVersion, msg.Type, "remote")
 
 		case err := <-errChan:
 			if err != nil {
@@ -319,51 +329,4 @@ func (c *ConnectionHandler) v2MainLoop() {
 	}
 
 	c.Logf("v2MainLoop Done")
-}
-
-func (c *ConnectionHandler) v1MainLoop(remoteConn net.Conn) {
-	c.Logf("v1MainLoop")
-
-	errCh := make(chan error, 2)
-	go func() {
-		for {
-			msg, err := c.RecvV1Message(remoteConn)
-			if err != nil {
-				c.Logf("RecvV1Message(brDest) err: %s", err)
-				errCh <- err
-				return
-			}
-			c.metricMsgReceived("v1", msg.Type, "remote")
-
-			if err := c.SendV1Message(c.connLocal, msg); err != nil {
-				c.Logf("SendV1Message(clientCon) err: %s", err)
-				errCh <- err
-				return
-			}
-			c.metricMsgSent("v1", msg.Type, "local")
-		}
-	}()
-
-	go func() {
-		for {
-			msg, err := c.RecvV1Message(c.connLocal)
-			if err != nil {
-				c.Logf("c.RecvV1Message(c.connLocal) err: %s", err)
-				errCh <- err
-				return
-			}
-			c.metricMsgReceived("v1", msg.Type, "local")
-
-			if err := c.SendV1Message(remoteConn, msg); err != nil {
-				c.Logf("SendV1Message(connRemote) err: %s", err)
-				errCh <- err
-				return
-			}
-			c.metricMsgSent("v1", msg.Type, "remote")
-		}
-	}()
-
-	err := <-errCh
-	c.Logf("Received error: %s", err)
-	c.Logf("Done")
 }
