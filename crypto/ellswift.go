@@ -23,22 +23,22 @@ var (
 )
 
 type EllswiftExchange struct {
-	PrivateKey     *secp.PrivateKey
-	EllswiftPubKey []byte
+	privKey        *secp.PrivateKey
+	ellswiftPubKey []byte
 }
 
 func NewEllswiftExchange() (*EllswiftExchange, error) {
-	pk, err := secp.GeneratePrivateKey()
+	privKey, err := secp.GeneratePrivateKey()
 	if err != nil {
 		return nil, err
 	}
-	return NewEllswiftExchangeFromKeys(pk, GetEllswiftPubKey(pk.PubKey()))
+	return NewEllswiftExchangeFromKeys(privKey, GetEllswiftPubKey(privKey.PubKey()))
 }
 
 func NewEllswiftExchangeFromKeys(privKey *secp.PrivateKey, ourEllswiftPubKey []byte) (*EllswiftExchange, error) {
 	return &EllswiftExchange{
-		PrivateKey:     privKey,
-		EllswiftPubKey: ourEllswiftPubKey,
+		privKey:        privKey,
+		ellswiftPubKey: ourEllswiftPubKey,
 	}, nil
 }
 
@@ -49,13 +49,14 @@ func (ex *EllswiftExchange) ComputeSharedSecret(otherEllswiftPubKey []byte, init
 	if err != nil {
 		return nil, err
 	}
+
 	var h []byte
 	if initiating {
-		h = append(h, ex.EllswiftPubKey...)
+		h = append(h, ex.ellswiftPubKey...)
 		h = append(h, otherEllswiftPubKey...)
 	} else {
 		h = append(h, otherEllswiftPubKey...)
-		h = append(h, ex.EllswiftPubKey...)
+		h = append(h, ex.ellswiftPubKey...)
 	}
 	h = append(h, ecdhPointX32...)
 
@@ -71,10 +72,11 @@ func (ex *EllswiftExchange) EllswiftEcdhXonly(otherPubKeyEncoded []byte) ([]byte
 		return nil, err
 	}
 
-	fvY := liftX(otherPubKeyDecoded)
-
-	pubKey := secp.NewPublicKey(otherPubKeyDecoded, fvY)
-	return secp.GenerateSharedSecret(ex.PrivateKey, pubKey), nil
+	/*
+		use ECDH to calculate sharedSecret
+	*/
+	pubKey := secp.NewPublicKey(otherPubKeyDecoded, liftX(otherPubKeyDecoded).Normalize())
+	return secp.GenerateSharedSecret(ex.privKey, pubKey), nil
 }
 
 func GetEllswiftPubKey(pubKey *secp.PublicKey) []byte {
@@ -362,17 +364,27 @@ func XSwiftEC(u, t *secp.FieldVal) (*secp.FieldVal, error) {
 	var y2, y2Times4 secp.FieldVal
 	y2.Set(&Y).Mul(&Y)
 	y2Times4.Set(&y2).MulInt(4)
-	c1.Set(u).Add(&y2Times4)
+
+	/*
+		case 1
+	*/
+	c1.Set(u).Add(&y2Times4).Normalize()
 	if isValidX(&c1) {
 		return &c1, nil
 	}
 
-	c2.Set(&X).Negate(1).Mul(new(secp.FieldVal).Set(&Y).Inverse()).Add(&negU).Mul(new(secp.FieldVal).SetInt(2).Inverse())
+	c2.Set(&X).Negate(1).Mul(new(secp.FieldVal).Set(&Y).Inverse()).Add(&negU).Mul(new(secp.FieldVal).SetInt(2).Inverse()).Normalize()
+	/*
+		case 2
+	*/
 	if isValidX(&c2) {
 		return &c2, nil
 	}
 
-	c3.Set(&X).Mul(new(secp.FieldVal).Set(&Y).Inverse()).Add(&negU).Mul(new(secp.FieldVal).SetInt(2).Inverse())
+	/*
+		case 3
+	*/
+	c3.Set(&X).Mul(new(secp.FieldVal).Set(&Y).Inverse()).Add(&negU).Mul(new(secp.FieldVal).SetInt(2).Inverse()).Normalize()
 	if isValidX(&c3) {
 		return &c3, nil
 	}

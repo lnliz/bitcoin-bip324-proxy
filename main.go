@@ -4,13 +4,14 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -36,39 +37,43 @@ var (
 func startProxyListener(name string, addr string, peer string, netMagic []byte, v1ProtoOnly bool, v2ProtoOnly bool, metricsInclPeerInfo bool) {
 	laddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
-		log.Fatalf("Failed to resolve address: %s", err)
+		log.Fatal().Err(err).Msg("Failed to resolve address")
 	}
 
 	listener, err := net.ListenTCP("tcp", laddr)
 	if err != nil {
-		log.Fatal("Error starting proxy server:", err)
+		log.Fatal().Err(err).Msg("Error starting proxy server")
+
 	}
 	defer listener.Close()
 
-	log.Printf("Listening on %s and %s", addr, name)
+	log.Info().Msgf("Listening on %s as %s", addr, name)
 
 	for {
 		clientConn, err := listener.AcceptTCP()
 		if err != nil {
-			log.Println("Error accepting connection:", err)
+			log.Info().Msgf("Error accepting connection: %s", err)
 			continue
 		}
 		metricProxyConnectionsIn.WithLabelValues().Inc()
 
-		con := ConnectionHandler{
-			useRemoteAddr:   peer,
-			connLocal:       clientConn,
-			v1ProtocolOnly:  v1ProtoOnly,
-			v2ProtocolOnly:  v2ProtoOnly,
-			metricsInclPeer: metricsInclPeerInfo,
-			netMagic:        netMagic,
-		}
+		con := NewConnectionHandler(
+			netMagic,
+			peer,
+			clientConn,
+			v1ProtoOnly,
+			v2ProtoOnly,
+			metricsInclPeerInfo,
+		)
 
 		go con.handleLocalConnection()
 	}
 }
 
 func main() {
+	flagDebugLogLevel := flag.Bool("debug", false, "set log level to debug")
+	flagTraceLogLevel := flag.Bool("trace", false, "set log level to trace")
+
 	flagNetwork := flag.String("network", "mainnet", "the bitcoin network to use, options: mainnet, testnet, signet, regtest")
 	flagProxyAddr := flag.String("addr", "127.0.0.1:38333", "proxy addr for listen for v1 messages")
 	flagMetricsAddr := flag.String("metrics-addr", "127.0.0.1:9333", "http addr for expose prometheus metrics")
@@ -83,18 +88,29 @@ func main() {
 
 	flag.Parse()
 
+	// Default level for this example is info, unless flagDebugLogLevel flag is present
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	if *flagDebugLogLevel {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	}
+	if *flagTraceLogLevel {
+		zerolog.SetGlobalLevel(zerolog.TraceLevel)
+	}
+
 	nm, found := NetMagics[*flagNetwork]
 	if !found {
-		log.Println("invalid network")
+		log.Info().Msgf("invalid network: %s", *flagNetwork)
 		return
 	}
 
 	if flagMetricsAddr != nil && *flagMetricsAddr != "" {
 		initMetrics(*flagMetricsInclPeerInfo)
 		go func() {
-			log.Printf("metrics listen addr: %s", *flagMetricsAddr)
+			log.Info().Msgf("metrics listen addr: %s", *flagMetricsAddr)
 			http.Handle("/metrics", promhttp.Handler())
-			log.Fatal(http.ListenAndServe(*flagMetricsAddr, nil))
+			if err := http.ListenAndServe(*flagMetricsAddr, nil); err != nil {
+				log.Fatal().Err(err).Msg("http.ListenAndServe")
+			}
 		}()
 	}
 
@@ -106,7 +122,7 @@ func main() {
 			if len(peer) > 0 {
 				addr := fmt.Sprintf("%s:%d", *flagPeersAddr, port)
 				port += 1
-				name := fmt.Sprintf("Direct proxy to %s", peer)
+				name := fmt.Sprintf("direct proxy to %s", peer)
 				go func(a string, p string) {
 					startProxyListener(name, a, p, nm, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo)
 				}(addr, peer)
@@ -116,5 +132,5 @@ func main() {
 		}
 	}
 
-	startProxyListener("Proxy server", *flagProxyAddr, "", nm, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo)
+	startProxyListener("proxy server", *flagProxyAddr, "", nm, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo)
 }

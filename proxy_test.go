@@ -123,7 +123,7 @@ func TestProyWithMockV2Peer(t *testing.T) {
 	go startProxyListener("tst", "localhost:7856", remoteAddr, NetMagicMainnet, false, true, true)
 
 	// give listener time to start up
-	time.Sleep(time.Second)
+	time.Sleep(500 * time.Millisecond)
 
 	nc, err := net.Dial("tcp", "localhost:7856")
 	if err != nil {
@@ -136,14 +136,10 @@ func TestProyWithMockV2Peer(t *testing.T) {
 		Payload: v1VersionMsgPayload,
 	}
 
-	c := &ConnectionHandler{
-		conId:    77,
-		netMagic: NetMagicMainnet,
-	}
-
-	if err := c.InitTransport(nc); err != nil {
-		t.Fatalf("NewTransport() err: %v", err)
-	}
+	/*
+		only to use the convenient SendV1Message() / RecvV1Message() functions
+	*/
+	c := NewConnectionHandler(NetMagicMainnet, "", nil, false, false, false)
 
 	if err := c.SendV1Message(nc, v1VersionMsg); err != nil {
 		t.Fatalf("Failed to send message to mock server: %v", err)
@@ -167,7 +163,8 @@ func TestProyWithMockV2Peer(t *testing.T) {
 		t.Fatalf("Wrong response type: %v", resp.Type)
 	}
 
-	time.Sleep(time.Second)
+	// give time to digest message
+	time.Sleep(500 * time.Millisecond)
 
 	/*
 		we expect the one version message we sent above

@@ -1,6 +1,8 @@
 package main
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"github.com/prometheus/client_golang/prometheus"
+)
 
 var (
 	namespace = "bip324_proxy"
@@ -34,7 +36,6 @@ var (
 )
 
 func initMetrics(metricsInclPeerInfo bool) {
-
 	lbls := []string{"version", "type", "direction"}
 	if metricsInclPeerInfo {
 		lbls = append(lbls, "peer")
@@ -82,8 +83,6 @@ func initMetrics(metricsInclPeerInfo bool) {
 		ConstLabels: nil,
 	}, lbls)
 
-	// node_network_transmit_bytes_total
-
 	prometheus.MustRegister(metricProxyConnectionsIn)
 	prometheus.MustRegister(metricProxyConnectionsOut)
 	prometheus.MustRegister(metricProxyConnectionsOutErrors)
@@ -95,6 +94,7 @@ func initMetrics(metricsInclPeerInfo bool) {
 }
 
 func (c *ConnectionHandler) metricMsgReceived(v string, t string, dir string) {
+	c.log.Trace().Str("type", t).Str("version", v).Str("dir", dir).Msg("metricMsgReceived")
 	lbls := prometheus.Labels{
 		"version":   v,
 		"type":      t,
@@ -107,6 +107,7 @@ func (c *ConnectionHandler) metricMsgReceived(v string, t string, dir string) {
 }
 
 func (c *ConnectionHandler) metricMsgSent(v string, t string, dir string) {
+	c.log.Trace().Str("type", t).Str("version", v).Str("dir", dir).Msg("metricMsgSent")
 	lbls := prometheus.Labels{
 		"direction": dir,
 		"type":      t,

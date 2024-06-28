@@ -108,8 +108,7 @@ func TestEllswiftEcdhXonly(t *testing.T) {
 			want:           "eea33d81f071db1302466ad96b4526a358d0c4cbcdea5e51d7423356bc918ce5",
 		},
 	} {
-		t.Run(fmt.Sprintf("%#v", tst.want), func(t *testing.T) {
-
+		t.Run(fmt.Sprintf("%s", tst.want), func(t *testing.T) {
 			pubkeyTheirs := mustDecodeHexStringToBytes(tst.inPubKeyTheirs)
 			privkeyBytes := mustDecodeHexStringToBytes(tst.inPrivKeyStr)
 			privKey := secp.PrivKeyFromBytes(privkeyBytes)
@@ -127,6 +126,63 @@ func TestEllswiftEcdhXonly(t *testing.T) {
 
 			if got != tst.want {
 				t.Errorf("not matching")
+			}
+		})
+	}
+}
+
+func TestEllswiftComputeSharedSecret(t *testing.T) {
+	for _, tst := range []struct {
+		inPubKeyTheirs string
+		inPrivKeyStr   string
+		inPubKeyOurs   string
+		init           bool
+		want           string
+	}{
+		{
+			inPubKeyTheirs: "bda17ec7cbcf7b515e24f8e018ff3dfaf072d16feba2ecb363f937b41f0a9056d4b28a948f867fd6ead84ee8d035bb4c1d5c71399370da67b88a9d9223f398a7",
+			inPrivKeyStr:   "21d8742232e5dda33edfa789d46900c5c92bd42603e01de89121048bcf06c5a4",
+			inPubKeyOurs:   "9bc8974074b5ef63cb9aa195e8362124b46b21246de6fb6b3828f1c4a44e2dc21255bce3aa6e965c717157b735e1a6692ba7893f6beb342e16c8353f6b2d5cb7",
+			init:           true,
+			want:           "f00dd09ab0e7baef06eb3cbd963d9eb86a2694e74fb715c40284f30d749e136e",
+		},
+
+		{
+			inPubKeyTheirs: "00cbfb0a599dd26f37b678ae18cebb23f0d6c64ed4890ac63ea81919c7c25159c41825bb13e7a065d15f1be99907facdcf81635dd0ad5d3c74ae1f26f6633ae6",
+			inPrivKeyStr:   "606904079c8358c5bf274c9ec934fe12c17e6777eb21dd12143387fe971925f2",
+			inPubKeyOurs:   "9eb46834b3dd08cf81c4ff887d61e94c14848dbd2f81ef5f639b6f248e4a8f37b2b58984a122bee1ab757d18c30cac5976b59acc98f3070c73c52ab2d40e2864",
+			init:           true,
+			want:           "25b5d91bb6cddc01d1e46bff58aab6f0dc66c1929abc98c22cf424ec0aff57a5",
+		},
+		{
+			inPubKeyTheirs: "9eb46834b3dd08cf81c4ff887d61e94c14848dbd2f81ef5f639b6f248e4a8f37b2b58984a122bee1ab757d18c30cac5976b59acc98f3070c73c52ab2d40e2864",
+			inPrivKeyStr:   "cec0160920d420c99cc3404cc3a7732e536c1891b9103ac7b9e2ba5fc60ca8b4",
+			inPubKeyOurs:   "00cbfb0a599dd26f37b678ae18cebb23f0d6c64ed4890ac63ea81919c7c25159c41825bb13e7a065d15f1be99907facdcf81635dd0ad5d3c74ae1f26f6633ae6",
+			init:           false,
+			want:           "25b5d91bb6cddc01d1e46bff58aab6f0dc66c1929abc98c22cf424ec0aff57a5",
+		},
+	} {
+		t.Run(fmt.Sprintf("%s", tst.want), func(t *testing.T) {
+
+			pubkeyTheirs := mustDecodeHexStringToBytes(tst.inPubKeyTheirs)
+			pubkeyOurs := mustDecodeHexStringToBytes(tst.inPubKeyOurs)
+
+			privkeyBytes := mustDecodeHexStringToBytes(tst.inPrivKeyStr)
+			privKey := secp.PrivKeyFromBytes(privkeyBytes)
+
+			ex, err := NewEllswiftExchangeFromKeys(privKey, pubkeyOurs)
+			if err != nil {
+				t.Fatalf("NewEllswiftExchangeFromKeys err: %s", err)
+			}
+
+			res, err := ex.ComputeSharedSecret(pubkeyTheirs, tst.init)
+			if err != nil {
+				t.Errorf("omg no: %s", err)
+			}
+			got := hex.EncodeToString(res)
+
+			if got != tst.want {
+				t.Errorf("not matching, got: %s", got)
 			}
 		})
 	}
@@ -205,12 +261,12 @@ func TestEllswiftAliceAndBob(t *testing.T) {
 		t.Errorf("Bob EllswiftCreate() err: %s", err)
 	}
 
-	sharedSecretAlice, err := exAlice.ComputeSharedSecret(exBob.EllswiftPubKey, true)
+	sharedSecretAlice, err := exAlice.ComputeSharedSecret(exBob.ellswiftPubKey, true)
 	if err != nil {
 		t.Errorf("Alice bip324_ecdh() err: %s", err)
 	}
 
-	sharedSecretBob, err := exBob.ComputeSharedSecret(exAlice.EllswiftPubKey, false)
+	sharedSecretBob, err := exBob.ComputeSharedSecret(exAlice.ellswiftPubKey, false)
 	if err != nil {
 		t.Fatalf("Bob bip324_ecdh() err: %s", err)
 	}

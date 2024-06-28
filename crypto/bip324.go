@@ -4,7 +4,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
-
 	"github.com/lnliz/bitcoin-bip324-proxy/fschacha20"
 )
 
@@ -50,7 +49,7 @@ func NewBip324CipherWithEllswiftExchange(netMagic []byte, ex *EllswiftExchange) 
 }
 
 func (c *Bip324Cipher) GetOurEllswiftPublicKey() []byte {
-	return c.ex.EllswiftPubKey
+	return c.ex.ellswiftPubKey
 }
 
 func (c *Bip324Cipher) Init(theirEllswiftPubKey []byte, initiating bool) error {
@@ -61,6 +60,9 @@ func (c *Bip324Cipher) Init(theirEllswiftPubKey []byte, initiating bool) error {
 
 	c.initFromSharedSecret(sharedSecret, initiating)
 
+	/*
+		erase sharedSecret from memory
+	*/
 	for idx := range sharedSecret {
 		sharedSecret[idx] = 0
 	}

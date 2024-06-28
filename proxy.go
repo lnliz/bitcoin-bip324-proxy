@@ -4,16 +4,19 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"log"
 	"net"
 	"sync/atomic"
 
 	bip324_transport "github.com/lnliz/bitcoin-bip324-proxy/transport"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 type ConnectionHandler struct {
-	conId    uint64
 	netMagic []byte
+
+	log zerolog.Logger
 
 	transport *bip324_transport.V2Transport
 
@@ -27,12 +30,29 @@ type ConnectionHandler struct {
 	connLocal net.Conn
 }
 
+func NewConnectionHandler(netMagic []byte, useRemoteAddr string, nc net.Conn, v1ProtoOnly bool, v2ProtoOnly bool, metricsInclPeerInfo bool) *ConnectionHandler {
+	return &ConnectionHandler{
+		log: log.With().Int("conId", int(conId.Add(1))).Logger(),
+
+		useRemoteAddr:   useRemoteAddr,
+		connLocal:       nc,
+		v1ProtocolOnly:  v1ProtoOnly,
+		v2ProtocolOnly:  v2ProtoOnly,
+		metricsInclPeer: metricsInclPeerInfo,
+		netMagic:        netMagic,
+	}
+}
+
 const (
 	v1HeaderLength = 24
 )
 
-func (c *ConnectionHandler) Logf(msg string, args ...interface{}) {
-	log.Printf(fmt.Sprintf("conId: %d -> ", c.conId)+msg, args...)
+func (c *ConnectionHandler) Infof(msg string, args ...interface{}) {
+	c.log.Info().Msgf(msg, args...)
+}
+
+func (c *ConnectionHandler) Debugf(msg string, args ...interface{}) {
+	log.Debug().Msgf(msg, args...)
 }
 
 func (c *ConnectionHandler) InitTransport(peerConn net.Conn) error {
@@ -46,18 +66,13 @@ var (
 )
 
 func (c *ConnectionHandler) handleLocalConnection() {
-	/*
-		first, get new connection ID for logging
-	*/
-	c.conId = conId.Add(1)
-
 	defer func() {
-		c.Logf("closing %s", c.connLocal.RemoteAddr())
+		c.Infof("closing %s", c.connLocal.RemoteAddr())
 		c.connLocal.Close()
 	}()
 
-	c.Logf("handleLocalConnection, local: %s", c.connLocal.RemoteAddr())
-	c.Logf("handleLocalConnection, remote upstream: %s", c.useRemoteAddr)
+	c.Infof("handleLocalConnection, local: %s", c.connLocal.RemoteAddr())
+	c.Infof("handleLocalConnection, remote upstream: %s", c.useRemoteAddr)
 
 	v1VersionSuffix := []byte("version\x00\x00\x00\x00\x00")
 	v1Prefix := append(c.netMagic, v1VersionSuffix...)
@@ -66,7 +81,7 @@ func (c *ConnectionHandler) handleLocalConnection() {
 	for len(header) < len(v1Prefix) {
 		oneByte, err := bip324_transport.ReadData(c.connLocal, 1)
 		if err != nil {
-			c.Logf("read err: %s", err)
+			c.Infof("read err: %s", err)
 			return
 		}
 		header = append(header, oneByte...)
@@ -75,7 +90,7 @@ func (c *ConnectionHandler) handleLocalConnection() {
 		}
 
 		if !bytes.Equal(header, v1Prefix) {
-			c.Logf("V1 prefix mismatch after %d bytes (expected %x got %x), close connection.\n", len(header), v1Prefix, header)
+			c.Infof("V1 prefix mismatch after %d bytes (expected %x got %x), close connection.\n", len(header), v1Prefix, header)
 			return
 		}
 	}
@@ -83,7 +98,7 @@ func (c *ConnectionHandler) handleLocalConnection() {
 	remainingBytesLen := v1HeaderLength - len(header)
 	remainingBytes, err := bip324_transport.ReadData(c.connLocal, remainingBytesLen)
 	if err != nil {
-		c.Logf("read remainingBytesLen err: %s", err)
+		c.Infof("read remainingBytesLen err: %s", err)
 		return
 	}
 
@@ -91,7 +106,7 @@ func (c *ConnectionHandler) handleLocalConnection() {
 
 	v1Msg, err := c.RecvV1MessageWithHeader(header, c.connLocal)
 	if err != nil {
-		c.Logf("c.RecvV1Message(brClient) - got an err: %s", err)
+		c.Infof("c.RecvV1Message(brClient) - got an err: %s", err)
 		return
 	}
 
@@ -106,25 +121,26 @@ func (c *ConnectionHandler) handleLocalConnection() {
 	localUserAgent := string(v1Msg.Payload[81 : 81+int(v1Msg.Payload[80])])
 
 	if c.useRemoteAddr != "" {
-		c.Logf("using upstream: %s", c.useRemoteAddr)
+		c.Infof("using upstream: %s", c.useRemoteAddr)
 		remoteAddr = c.useRemoteAddr
 	}
 
-	c.Logf("Local client connected")
-	c.Logf("peerRemoteAddr: %s ", remoteAddr)
-	c.Logf("localUserAgent: %s ", localUserAgent)
+	c.Infof("Local client connected")
+	c.Infof("peerRemoteAddr: %s ", remoteAddr)
+	c.Infof("localUserAgent: %s ", localUserAgent)
 
 	peerConn, err := net.Dial("tcp", remoteAddr)
 	if err != nil {
 		metricProxyConnectionsOutErrors.WithLabelValues("v2").Inc()
-		c.Logf("Error connecting to destination:", err)
+		c.Infof("Error connecting to destination: %s", err)
 		return
 	}
 	defer peerConn.Close()
-	c.Logf("Remote client connected")
+	c.Infof("Remote client connected")
+	c.log = c.log.With().Str("peer", remoteAddr).Logger()
 
 	if err := c.InitTransport(peerConn); err != nil {
-		c.Logf("c.InitTransport err: %s", err)
+		c.Infof("c.InitTransport err: %s", err)
 		return
 	}
 
@@ -134,15 +150,15 @@ func (c *ConnectionHandler) handleLocalConnection() {
 	if c.v1ProtocolOnly {
 		gotV2Connection = false
 	} else {
-		c.Logf("try V2Handshake")
+		c.Infof("try V2Handshake")
 
 		if err := c.transport.V2Handshake(true); err != nil {
 			gotV2Connection = false
-			c.Logf("transport.V2Handshake() err: %s", err)
+			c.Infof("transport.V2Handshake() err: %s", err)
 
 			peerConn.Close()
 			if c.v2ProtocolOnly {
-				c.Logf("no fallback to v1, disconnecting")
+				c.Infof("no fallback to v1, disconnecting")
 				return
 			}
 
@@ -150,37 +166,37 @@ func (c *ConnectionHandler) handleLocalConnection() {
 			peerConn, err = net.Dial("tcp", remoteAddr)
 			if err != nil {
 				metricProxyConnectionsOutErrors.WithLabelValues("v1").Inc()
-				c.Logf("failed to re-connect")
+				c.Infof("failed to re-connect")
 				return
 			}
-			c.Logf("reconnected to %s", remoteAddr)
+			c.Infof("reconnected to %s", remoteAddr)
 
 			metricProxyConnectionsV1Fallbacks.WithLabelValues().Inc()
-			c.Logf("falling back to v1")
+			c.Infof("falling back to v1")
 
 			if err := c.SendV1Message(peerConn, v1Msg); err != nil {
-				c.Logf("Send v1 message err: %s", err)
+				c.Infof("Send v1 message err: %s", err)
 				return
 			}
 		}
 	}
 
 	if gotV2Connection {
-		c.Logf("Starting v2 connection")
+		c.Infof("Starting v2 connection")
 		metricProxyConnectionsOut.WithLabelValues("v2").Inc()
 
 		if err := c.transport.SendV2Message(v1Msg); err != nil {
-			c.Logf("c.SendV2Message(lastV1Message) err: %s", err)
+			c.Infof("c.SendV2Message(lastV1Message) err: %s", err)
 			return
 		}
 
 		c.v2MainLoop()
 	} else {
-		c.Logf("Starting v1 connection")
+		c.Infof("Starting v1 connection")
 		metricProxyConnectionsOut.WithLabelValues("v1").Inc()
 
 		if err := c.SendV1Message(peerConn, v1Msg); err != nil {
-			c.Logf("SendV1Message err: %s", err)
+			c.Infof("SendV1Message err: %s", err)
 			return
 		}
 
@@ -228,12 +244,12 @@ func (c *ConnectionHandler) RecvV1Message(conn net.Conn) (*bip324_transport.P2pM
 }
 
 func (c *ConnectionHandler) v1MainLoop(remoteConn net.Conn) {
-	c.Logf("v1MainLoop")
+	c.Infof("v1MainLoop")
 	c.mainLoop(false, remoteConn)
 }
 
 func (c *ConnectionHandler) v2MainLoop() {
-	c.Logf("v2MainLoop")
+	c.Infof("v2MainLoop")
 	c.mainLoop(true, nil)
 }
 
@@ -258,7 +274,7 @@ func (c *ConnectionHandler) mainLoop(remoteIsV2 bool, v1RemotePeerCon net.Conn) 
 				msg, err = c.RecvV1Message(v1RemotePeerCon)
 			}
 			if err != nil {
-				c.Logf("c.RecvV2Message() err: %s", err)
+				c.Infof("c.RecvV2Message() err: %s", err)
 				errChan <- err
 				close(chanSendToLocal)
 				return
@@ -272,7 +288,7 @@ func (c *ConnectionHandler) mainLoop(remoteIsV2 bool, v1RemotePeerCon net.Conn) 
 		for {
 			msg, err := c.RecvV1Message(c.connLocal)
 			if err != nil {
-				c.Logf("c.RecvV1Message(c.connLocal) err: %s", err)
+				c.Infof("c.RecvV1Message(c.connLocal) err: %s", err)
 				errChan <- err
 				close(chanSendToRemote)
 				return
@@ -288,12 +304,12 @@ func (c *ConnectionHandler) mainLoop(remoteIsV2 bool, v1RemotePeerCon net.Conn) 
 		select {
 		case msg, ok := <-chanSendToLocal:
 			if !ok {
-				c.Logf("chanSendToLocal closed")
+				c.Infof("chanSendToLocal closed")
 				errChan <- fmt.Errorf("chanSendToLocal closed")
 				break
 			}
 			if err := c.SendV1Message(c.connLocal, msg); err != nil {
-				c.Logf("SendV1Message() err: %s", err)
+				c.Infof("SendV1Message() err: %s", err)
 				errChan <- err
 				break
 			}
@@ -301,19 +317,19 @@ func (c *ConnectionHandler) mainLoop(remoteIsV2 bool, v1RemotePeerCon net.Conn) 
 
 		case msg, ok := <-chanSendToRemote:
 			if !ok {
-				c.Logf("chanSendToRemote closed")
+				c.Infof("chanSendToRemote closed")
 				errChan <- fmt.Errorf("chanSendToRemote closed")
 				break
 			}
 			if remoteIsV2 {
 				if err := c.transport.SendV2Message(msg); err != nil {
-					c.Logf("SendV2Message(connRemote) err: %s", err)
+					c.Infof("SendV2Message(connRemote) err: %s", err)
 					errChan <- err
 					break
 				}
 			} else {
 				if err := c.SendV1Message(v1RemotePeerCon, msg); err != nil {
-					c.Logf("SendV1Message(v1RemotePeerCon) err: %s", err)
+					c.Infof("SendV1Message(v1RemotePeerCon) err: %s", err)
 					errChan <- err
 					return
 				}
@@ -322,7 +338,7 @@ func (c *ConnectionHandler) mainLoop(remoteIsV2 bool, v1RemotePeerCon net.Conn) 
 
 		case err := <-errChan:
 			if err != nil {
-				c.Logf("v2MainLoop err: %s", err)
+				c.Infof("v2MainLoop err: %s", err)
 				shouldExit = true
 				break
 			}
@@ -332,5 +348,5 @@ func (c *ConnectionHandler) mainLoop(remoteIsV2 bool, v1RemotePeerCon net.Conn) 
 		}
 	}
 
-	c.Logf("v2MainLoop Done")
+	c.Infof("v2MainLoop Done")
 }
