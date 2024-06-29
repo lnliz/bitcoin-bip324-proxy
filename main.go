@@ -75,7 +75,7 @@ func main() {
 	flagTraceLogLevel := flag.Bool("trace", false, "set log level to trace")
 
 	flagNetwork := flag.String("network", "mainnet", "the bitcoin network to use, options: mainnet, testnet, signet, regtest")
-	flagProxyAddr := flag.String("addr", "127.0.0.1:38333", "proxy addr for listen for v1 messages")
+	flagProxyAddr := flag.String("addr", "127.0.0.1:8324", "local proxy addr for listen for v1 messages")
 	flagMetricsAddr := flag.String("metrics-addr", "127.0.0.1:9333", "http addr for expose prometheus metrics")
 	flagMetricsInclPeerInfo := flag.Bool("metrics-incl-peer-info", false, "metrics-incl-peer-info")
 
