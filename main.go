@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"net"
@@ -9,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/wire"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -18,23 +18,19 @@ var (
 	/*
 	   Mainnet: 0xD9B4BEF9
 	   Testnet: 0x0709110B
-	   Signet: 0x40CF030A
+	   Signet:  0x40CF030A
 	   Regtest: 0xDAB5BFFA
 	*/
-	NetMagicMainnet, _ = hex.DecodeString("f9beb4d9")
-	NetMagicTestnet, _ = hex.DecodeString("0b110907")
-	NetMagicSignet, _  = hex.DecodeString("0a03cf40")
-	NetMagicRegtest, _ = hex.DecodeString("fabfb5da")
-
-	NetMagics = map[string][]byte{
-		"mainnet": NetMagicMainnet,
-		"testnet": NetMagicTestnet,
+	NetMagicSignet wire.BitcoinNet = 0x40CF030A
+	btcNetworkMap                  = map[string]wire.BitcoinNet{
+		"mainnet": wire.MainNet,
+		"testnet": wire.TestNet3,
 		"signet":  NetMagicSignet,
-		"regtest": NetMagicRegtest,
+		"regtest": wire.TestNet,
 	}
 )
 
-func startProxyListener(name string, addr string, peer string, netMagic []byte, v1ProtoOnly bool, v2ProtoOnly bool, metricsInclPeerInfo bool) {
+func startProxyListener(name string, addr string, peer string, btcNet wire.BitcoinNet, v1ProtoOnly bool, v2ProtoOnly bool, metricsInclPeerInfo bool) {
 	laddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to resolve address")
@@ -58,7 +54,7 @@ func startProxyListener(name string, addr string, peer string, netMagic []byte, 
 		metricProxyConnectionsIn.WithLabelValues().Inc()
 
 		con := NewConnectionHandler(
-			netMagic,
+			btcNet,
 			peer,
 			clientConn,
 			v1ProtoOnly,
@@ -97,7 +93,7 @@ func main() {
 		zerolog.SetGlobalLevel(zerolog.TraceLevel)
 	}
 
-	nm, found := NetMagics[*flagNetwork]
+	btcNet, found := btcNetworkMap[*flagNetwork]
 	if !found {
 		log.Info().Msgf("invalid network: %s", *flagNetwork)
 		return
@@ -121,16 +117,16 @@ func main() {
 			peer = strings.TrimSpace(peer)
 			if len(peer) > 0 {
 				addr := fmt.Sprintf("%s:%d", *flagPeersAddr, port)
-				port += 1
 				name := fmt.Sprintf("direct proxy to %s", peer)
 				go func(a string, p string) {
-					startProxyListener(name, a, p, nm, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo)
+					startProxyListener(name, a, p, btcNet, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo)
 				}(addr, peer)
 
+				port += 1
 				time.Sleep(100 * time.Millisecond)
 			}
 		}
 	}
 
-	startProxyListener("proxy server", *flagProxyAddr, "", nm, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo)
+	startProxyListener("proxy server", *flagProxyAddr, "", btcNet, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo)
 }

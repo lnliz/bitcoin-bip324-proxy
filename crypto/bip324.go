@@ -18,8 +18,8 @@ var (
 )
 
 type Bip324Cipher struct {
-	nm []byte
-	ex *EllswiftExchange
+	btcNet uint32
+	ex     *EllswiftExchange
 
 	SessionId             []byte
 	SendGarbageTerminator []byte
@@ -32,19 +32,19 @@ type Bip324Cipher struct {
 	recvPCipher *fschacha20.FSChaCha20Poly1305
 }
 
-func NewBip324Cipher(netMagic []byte) (*Bip324Cipher, error) {
+func NewBip324Cipher(btcNet uint32) (*Bip324Cipher, error) {
 	ex, err := NewEllswiftExchange()
 	if err != nil {
 		return nil, err
 	}
 
-	return NewBip324CipherWithEllswiftExchange(netMagic, ex), nil
+	return NewBip324CipherWithEllswiftExchange(btcNet, ex), nil
 }
 
-func NewBip324CipherWithEllswiftExchange(netMagic []byte, ex *EllswiftExchange) *Bip324Cipher {
+func NewBip324CipherWithEllswiftExchange(btcNet uint32, ex *EllswiftExchange) *Bip324Cipher {
 	return &Bip324Cipher{
-		ex: ex,
-		nm: netMagic,
+		ex:     ex,
+		btcNet: btcNet,
 	}
 }
 
@@ -112,7 +112,9 @@ func (c *Bip324Cipher) EncryptPacketBuf(contents []byte, aad []byte, ignore bool
 }
 
 func (c *Bip324Cipher) initFromSharedSecret(sharedSecret []byte, initiating bool) {
-	salt := append([]byte("bitcoin_v2_shared_secret"), c.nm...)
+	nm := make([]byte, 4)
+	binary.LittleEndian.PutUint32(nm, c.btcNet)
+	salt := append([]byte("bitcoin_v2_shared_secret"), nm...)
 	gt := hkdfSHA256(32, sharedSecret, salt, []byte("garbage_terminators"))
 
 	initiatorL := hkdfSHA256(32, sharedSecret, salt, []byte("initiator_L"))

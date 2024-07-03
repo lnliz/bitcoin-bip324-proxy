@@ -14,6 +14,7 @@ Clients (local) <--> bitcoin-bip324-proxy <--> External p2p peers (remote)
 
 
 ### how to build
+
 ```
 go build .
 ```

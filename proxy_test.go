@@ -6,10 +6,8 @@ import (
 	"time"
 
 	bip324_transport "github.com/lnliz/bitcoin-bip324-proxy/transport"
-)
 
-var (
-	v1VersionMsgPayload = []byte{0x80, 0x11, 0x1, 0x0, 0x4d, 0x4, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xa7, 0xfb, 0x60, 0x66, 0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xff, 0xff, 0xc0, 0xa8, 0x0, 0x1, 0x20, 0x8d, 0x4d, 0x4, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xb0, 0x38, 0x9f, 0x26, 0x2d, 0xea, 0xf3, 0xd, 0x1b, 0x2f, 0x62, 0x74, 0x63, 0x77, 0x69, 0x72, 0x65, 0x3a, 0x30, 0x2e, 0x35, 0x2e, 0x30, 0x2f, 0x62, 0x74, 0x63, 0x64, 0x3a, 0x30, 0x2e, 0x32, 0x34, 0x2e, 0x32, 0x2f, 0x11, 0x32, 0x2, 0x0, 0x0}
+	"github.com/btcsuite/btcd/wire"
 )
 
 type MockV2Peer struct {
@@ -17,7 +15,7 @@ type MockV2Peer struct {
 	addr string
 	ln   net.Listener
 
-	receivedMessages []*bip324_transport.P2pMessage
+	receivedV2Messages []wire.Message
 }
 
 func (s *MockV2Peer) Start() error {
@@ -46,10 +44,19 @@ func (s *MockV2Peer) acceptLoop() {
 
 func NewMockV2Peer(addr string, t *testing.T) *MockV2Peer {
 	return &MockV2Peer{
-		t:                t,
-		addr:             addr,
-		receivedMessages: []*bip324_transport.P2pMessage{},
+		t:                  t,
+		addr:               addr,
+		receivedV2Messages: []wire.Message{},
 	}
+}
+
+func getVersionMsg() wire.Message {
+	you := wire.NewNetAddress(&net.TCPAddr{IP: net.ParseIP("192.168.0.1"), Port: 8333}, wire.SFNodeNetwork)
+	you.Timestamp = time.Time{}
+	me := wire.NewNetAddress(&net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8333}, wire.SFNodeNetwork)
+	me.Timestamp = time.Time{}
+	versionMsg := wire.NewMsgVersion(me, you, 876543, 1234)
+	return versionMsg
 }
 
 func (s *MockV2Peer) v2ConnectionHandler(conn net.Conn) {
@@ -58,28 +65,24 @@ func (s *MockV2Peer) v2ConnectionHandler(conn net.Conn) {
 	s.t.Logf("v2ConnectionHandler")
 	defer conn.Close()
 
-	transport, err := bip324_transport.NewTransport(conn, NetMagicMainnet)
+	transport, err := bip324_transport.NewTransport(conn, uint32(wire.MainNet), false)
 	if err != nil {
 		s.t.Fatalf("NewTransport err: %s", err)
 		return
 	}
 
-	if err := transport.V2Handshake(false); err != nil {
+	if err := transport.V2Handshake(); err != nil {
 		s.t.Fatalf("V2Handshake: %s", err)
 		return
 	}
 
-	ourVersionMsg := &bip324_transport.P2pMessage{
-		Type:    "version",
-		Payload: v1VersionMsgPayload,
-	}
-
-	if err := transport.SendV2Message(ourVersionMsg); err != nil {
+	versionMsg := getVersionMsg()
+	if err := transport.SendV2Message(versionMsg); err != nil {
 		s.t.Fatalf("SendV2Message: %s", err)
 		return
 	}
 
-	msg, err := transport.RecvV2Message()
+	msg, _, _, err := transport.RecvV2Message()
 	if err != nil {
 		s.t.Fatalf("v2ConnectionHandler: RecvV2Message err: %s", err)
 		return
@@ -88,17 +91,30 @@ func (s *MockV2Peer) v2ConnectionHandler(conn net.Conn) {
 	/*
 		save received messages to inspect later
 	*/
-	s.receivedMessages = append(s.receivedMessages, msg)
+	s.receivedV2Messages = append(s.receivedV2Messages, msg)
 
-	if msg.Type == "version" {
-		s.t.Logf("v2ConnectionHandler: received version")
+	if msg.Command() == "version" {
+		s.t.Logf("v2ConnectionHandler: received version, sending VERACK")
 
-		verAck := &bip324_transport.P2pMessage{
-			Type:    "verack",
-			Payload: []byte{},
-		}
-
+		verAck := wire.NewMsgVerAck()
 		if err := transport.SendV2Message(verAck); err != nil {
+			s.t.Fatalf("v2ConnectionHandler: SendV2Message err: %s", err)
+			return
+		}
+	}
+
+	msg, _, _, err = transport.RecvV2Message()
+	if err != nil {
+		s.t.Fatalf("v2ConnectionHandler: RecvV2Message err: %s", err)
+		return
+	}
+	s.receivedV2Messages = append(s.receivedV2Messages, msg)
+
+	if msg.Command() == "ping" {
+		s.t.Logf("v2ConnectionHandler: received version, sending VERACK")
+
+		msgPong := wire.NewMsgPong(321)
+		if err := transport.SendV2Message(msgPong); err != nil {
 			s.t.Fatalf("v2ConnectionHandler: SendV2Message err: %s", err)
 			return
 		}
@@ -120,7 +136,7 @@ func TestProyWithMockV2Peer(t *testing.T) {
 
 	remoteAddr := "localhost:7865"
 
-	go startProxyListener("tst", "localhost:7856", remoteAddr, NetMagicMainnet, false, true, true)
+	go startProxyListener("tst", "localhost:7856", remoteAddr, wire.MainNet, false, true, true)
 
 	// give listener time to start up
 	time.Sleep(500 * time.Millisecond)
@@ -131,47 +147,57 @@ func TestProyWithMockV2Peer(t *testing.T) {
 	}
 	defer nc.Close()
 
-	v1VersionMsg := &bip324_transport.P2pMessage{
-		Type:    "version",
-		Payload: v1VersionMsgPayload,
-	}
-
 	/*
 		only to use the convenient SendV1Message() / RecvV1Message() functions
 	*/
-	c := NewConnectionHandler(NetMagicMainnet, "", nil, false, false, false)
+	c := NewConnectionHandler(wire.MainNet, "", nil, false, false, false)
 
-	if err := c.SendV1Message(nc, v1VersionMsg); err != nil {
+	ourVersionMessage := getVersionMsg()
+	if err := c.SendV1Message(nc, ourVersionMessage); err != nil {
 		t.Fatalf("Failed to send message to mock server: %v", err)
 	}
 
-	resp, err := c.RecvV1Message(nc)
+	msgResp, _, _, err := c.RecvV1Message(nc)
 	if err != nil {
 		t.Fatalf("Failed to RecvV1Message: %v", err)
 	}
 
-	if resp.Type != "version" {
-		t.Fatalf("Wrong response type: %v", resp.Type)
+	if msgResp.Command() != "version" {
+		t.Fatalf("Wrong response command: %v", msgResp.Command())
 	}
 
-	resp, err = c.RecvV1Message(nc)
+	msgResp, _, _, err = c.RecvV1Message(nc)
 	if err != nil {
 		t.Fatalf("Failed to RecvV1Message: %v", err)
 	}
 
-	if resp.Type != "verack" {
-		t.Fatalf("Wrong response type: %v", resp.Type)
+	if msgResp.Command() != "verack" {
+		t.Fatalf("Wrong response command: %v", msgResp.Command())
 	}
 
+	pingMsg := wire.NewMsgPing(123)
+
+	if err := c.SendV1Message(nc, pingMsg); err != nil {
+		t.Fatalf("Failed to send message to mock server: %v", err)
+	}
+
+	msgResp, _, _, err = c.RecvV1Message(nc)
+	if err != nil {
+		t.Fatalf("Failed to RecvV1Message: %v", err)
+	}
+
+	if msgResp.Command() != "pong" {
+		t.Fatalf("Wrong response command: %v", msgResp.Command())
+	}
 	// give time to digest message
 	time.Sleep(500 * time.Millisecond)
 
 	/*
-		we expect the one version message we sent above
+		we expect version and ping message --> 2
 	*/
-	if len(server.receivedMessages) != 1 {
-		t.Fatalf("server.receivedMessages: %#v", server.receivedMessages)
+	if len(server.receivedV2Messages) != 2 {
+		t.Fatalf("server.receivedV2Messages: %#v", server.receivedV2Messages)
 	}
 
-	t.Logf("server.receivedMessages comtains %d message(s) - as expected", len(server.receivedMessages))
+	t.Logf("server.receivedV2Messages contains %d message(s) - as expected", len(server.receivedV2Messages))
 }

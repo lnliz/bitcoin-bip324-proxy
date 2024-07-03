@@ -36,7 +36,7 @@ var (
 )
 
 func initMetrics(metricsInclPeerInfo bool) {
-	lbls := []string{"version", "type", "direction"}
+	lbls := []string{"version", "command", "interface"}
 	if metricsInclPeerInfo {
 		lbls = append(lbls, "peer")
 	}
@@ -93,12 +93,12 @@ func initMetrics(metricsInclPeerInfo bool) {
 	prometheus.MustRegister(metricBytesReceived)
 }
 
-func (c *ConnectionHandler) metricMsgReceived(v string, t string, dir string) {
-	c.log.Trace().Str("type", t).Str("version", v).Str("dir", dir).Msg("metricMsgReceived")
+func (c *ConnectionHandler) metricMsgReceived(v string, cmd string, iface string) {
+	c.log.Trace().Str("cmd", cmd).Str("version", v).Str("iface", iface).Msg("metricMsgReceived")
 	lbls := prometheus.Labels{
 		"version":   v,
-		"type":      t,
-		"direction": dir,
+		"command":   cmd,
+		"interface": iface,
 	}
 	if c.metricsInclPeer {
 		lbls["peer"] = c.peerRemoteAddr
@@ -106,11 +106,11 @@ func (c *ConnectionHandler) metricMsgReceived(v string, t string, dir string) {
 	metricMessagesReceived.With(lbls).Inc()
 }
 
-func (c *ConnectionHandler) metricMsgSent(v string, t string, dir string) {
-	c.log.Trace().Str("type", t).Str("version", v).Str("dir", dir).Msg("metricMsgSent")
+func (c *ConnectionHandler) metricMsgSent(v string, cmd string, iface string) {
+	c.log.Trace().Str("cmd", cmd).Str("version", v).Str("iface", iface).Msg("metricMsgSent")
 	lbls := prometheus.Labels{
-		"direction": dir,
-		"type":      t,
+		"interface": iface,
+		"command":   cmd,
 		"version":   v,
 	}
 	if c.metricsInclPeer {

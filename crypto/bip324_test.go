@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	tstNetMagicMainnet, _ = hex.DecodeString("f9beb4d9")
+	tstNetMagicMainnet uint32 = 0xd9b4bef9
 )
 
 func TestPacketEncoding(t *testing.T) {

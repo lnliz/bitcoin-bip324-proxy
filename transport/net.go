@@ -5,7 +5,7 @@ import (
 	"net"
 )
 
-func SendData(conn net.Conn, data []byte) error {
+func WriteData(conn net.Conn, data []byte) error {
 	totalSent := 0
 	for totalSent < len(data) {
 		n, err := conn.Write(data[totalSent:])

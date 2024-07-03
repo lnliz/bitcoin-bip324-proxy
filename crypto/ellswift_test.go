@@ -76,8 +76,9 @@ func TestXSwiftEC(t *testing.T) {
 				wantX.Normalize()
 
 				gotX, err := XSwiftEC(&tstU, &tstT)
-				t.Logf("XSwiftEC() err: %s", err)
-
+				if err != nil {
+					t.Fatalf("XSwiftEC() failed: %v", err)
+				}
 				if !gotX.Normalize().Equals(&wantX) {
 					t.Errorf("not matching, got: %s  want: %s", gotX.String(), wantX.String())
 				}

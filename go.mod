@@ -3,10 +3,12 @@ module github.com/lnliz/bitcoin-bip324-proxy
 go 1.17
 
 require (
+	github.com/btcsuite/btcd v0.24.2
+	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.3.0
 	github.com/prometheus/client_golang v1.19.1
 	github.com/rs/zerolog v1.33.0
-	golang.org/x/crypto v0.22.0
+	golang.org/x/crypto v0.24.0
 )
 
 require (

@@ -47,6 +47,8 @@ import (
 
     ...
 
+	"github.com/btcsuite/btcd/wire"
+
 	bip324_transport "github.com/lnliz/bitcoin-bip324-proxy/transport"
 )
 
@@ -59,12 +61,9 @@ import (
         ...
 	}
 
-	ourVersionMsg := &bip324_transport.P2pMessage{
-		Type:    "version",
-		Payload: ...
-	}
+	versionMsg := wire.NewMsgVersion( .... )
 
-	if err := transport.SendV2Message(ourVersionMsg); err != nil {
+	if err := transport.SendV2Message(versionMsg); err != nil {
         ...
 	}
 
