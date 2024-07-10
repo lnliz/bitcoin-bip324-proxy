@@ -30,7 +30,7 @@ var (
 	}
 )
 
-func startProxyListener(name string, addr string, peer string, btcNet wire.BitcoinNet, v1ProtoOnly bool, v2ProtoOnly bool, metricsInclPeerInfo bool) {
+func startProxyListener(name string, addr string, peer string, btcNet wire.BitcoinNet, v1ProtoOnly bool, v2ProtoOnly bool, metricsInclPeerInfo bool, appendUserAgentString bool) {
 	laddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to resolve address")
@@ -60,6 +60,7 @@ func startProxyListener(name string, addr string, peer string, btcNet wire.Bitco
 			v1ProtoOnly,
 			v2ProtoOnly,
 			metricsInclPeerInfo,
+			appendUserAgentString,
 		)
 
 		go con.handleLocalConnection()
@@ -74,6 +75,7 @@ func main() {
 	flagProxyAddr := flag.String("addr", "127.0.0.1:8324", "local proxy addr for listen for v1 messages")
 	flagMetricsAddr := flag.String("metrics-addr", "127.0.0.1:9333", "http addr for expose prometheus metrics")
 	flagMetricsInclPeerInfo := flag.Bool("metrics-incl-peer-info", false, "metrics-incl-peer-info")
+	flagAppendUserAgent := flag.Bool("append-proxy-user-agent", false, `add "bip324-proxy" to user agent`)
 
 	flagV1ProtocolOnly := flag.Bool("v1-only", false, "only v1 pass-through, do not try v2 connection with remote host")
 	flagV2ProtocolOnly := flag.Bool("v2-only", false, "only use v2, no fallback to v1")
@@ -119,7 +121,7 @@ func main() {
 				addr := fmt.Sprintf("%s:%d", *flagPeersAddr, port)
 				name := fmt.Sprintf("direct proxy to %s", peer)
 				go func(a string, p string) {
-					startProxyListener(name, a, p, btcNet, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo)
+					startProxyListener(name, a, p, btcNet, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo, *flagAppendUserAgent)
 				}(addr, peer)
 
 				port += 1
@@ -128,5 +130,5 @@ func main() {
 		}
 	}
 
-	startProxyListener("proxy server", *flagProxyAddr, "", btcNet, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo)
+	startProxyListener("proxy server", *flagProxyAddr, "", btcNet, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo, *flagAppendUserAgent)
 }

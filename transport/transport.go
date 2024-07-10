@@ -4,12 +4,14 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"fmt"
+	"github.com/rs/zerolog"
 	"math/rand"
 	"net"
 
 	bip324_crypto "github.com/lnliz/bitcoin-bip324-proxy/crypto"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -48,6 +50,11 @@ var (
 		"addrv2":       28,
 	}
 )
+
+func init() {
+	zerolog.SetGlobalLevel(zerolog.TraceLevel)
+	log.Trace().Msgf("LFG")
+}
 
 type V2Transport struct {
 	remoteCon      net.Conn
@@ -100,6 +107,7 @@ func EncodeBufAsV2(cmd string, buf []byte) []byte {
 }
 
 func (t *V2Transport) SendV2Message(msg wire.Message) error {
+	log.Trace().Msgf("SendV2Message %s", msg.Command())
 	buf, err := EncodeWireMessageAsV2(msg)
 	if err != nil {
 		return err
@@ -112,6 +120,7 @@ func (t *V2Transport) SendV2MessageBuf(cmd string, buf []byte) error {
 }
 
 func (t *V2Transport) lookForGarbage(nc net.Conn) error {
+	log.Trace().Msgf("lookForGarbage")
 	garbageReceived, err := ReadData(nc, bip324_crypto.GarbageTerminatorLength)
 	if err != nil {
 		return err
@@ -155,6 +164,7 @@ func (t *V2Transport) MaybeSendDecoyPackets() (int, error) {
 		}
 		packetsSent += 1
 	}
+	log.Trace().Msgf("MaybeSendDecoyPackets packetsSent: %d", packetsSent)
 
 	return packetsSent, nil
 }
@@ -170,6 +180,7 @@ func (t *V2Transport) SendBip324Packet(nc net.Conn, packet []byte, ignore bool) 
 }
 
 func (t *V2Transport) RecvBip324Packet(nc net.Conn) ([]byte, error) {
+	log.Trace().Msgf("RecvBip324Packet")
 	for {
 		encrLen, err := ReadData(nc, 3)
 		if err != nil {
@@ -184,11 +195,13 @@ func (t *V2Transport) RecvBip324Packet(nc net.Conn) ([]byte, error) {
 		expectedPayloadLen := 1 + length + bip324_crypto.Expansion
 		aeadCiphertext, err := ReadData(nc, expectedPayloadLen)
 		if err != nil {
+			log.Trace().Msgf("RecvBip324Packet err: %s", err.Error())
 			return nil, err
 		}
 
 		plaintext, err := t.cipher.DecryptPacketBuf(aeadCiphertext, t.RecvAad)
 		if err != nil {
+			log.Trace().Msgf("RecvBip324Packet DecryptPacketBuf err: %s", err.Error())
 			return nil, err
 		}
 
@@ -196,8 +209,10 @@ func (t *V2Transport) RecvBip324Packet(nc net.Conn) ([]byte, error) {
 
 		header := plaintext[0]
 		if header&bip324_crypto.HeaderIgnoreBit == bip324_crypto.HeaderIgnoreBit {
+			log.Trace().Msgf("RecvBip324Packet - skipping a decoy packet with ignore bit")
 			// skipping a decoy packet with ignore bit
 		} else {
+			log.Trace().Msgf("RecvBip324Packet DONE")
 			return plaintext[1 : length+1], nil
 		}
 	}
@@ -218,6 +233,7 @@ func DecodeWireMessageFromBuf(cmd string, buf []byte) (wire.Message, error) {
 }
 
 func (t *V2Transport) RecvV2Message() (wire.Message, string, []byte, error) {
+	log.Trace().Msgf("RecvV2Message")
 	buf, err := t.RecvBip324Packet(t.remoteCon)
 	if err != nil {
 		return nil, "", nil, err
@@ -243,6 +259,7 @@ func (t *V2Transport) RecvV2Message() (wire.Message, string, []byte, error) {
 	}
 
 	msg, err := DecodeWireMessageFromBuf(cmd, buf)
+	log.Trace().Msgf("RecvV2Message DONE")
 	return msg, cmd, buf, err
 }
 
@@ -337,10 +354,12 @@ func (t *V2Transport) V2Handshake() error {
 }
 
 func (t *V2Transport) sendOurEllswiftPubKey() error {
+	log.Trace().Msgf("sendOurEllswiftPubKey")
 	return WriteData(t.remoteCon, t.cipher.GetOurEllswiftPublicKey())
 }
 
 func (t *V2Transport) recvTheirEllswiftPubKey() error {
+	log.Trace().Msgf("recvTheirEllswiftPubKey")
 	theirEllswiftPubKey, err := ReadData(t.remoteCon, bip324_crypto.EllswiftPubKeyLength)
 	if err != nil {
 		return err

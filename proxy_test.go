@@ -136,7 +136,7 @@ func TestProyWithMockV2Peer(t *testing.T) {
 
 	remoteAddr := "localhost:7865"
 
-	go startProxyListener("tst", "localhost:7856", remoteAddr, wire.MainNet, false, true, true)
+	go startProxyListener("tst", "localhost:7856", remoteAddr, wire.MainNet, false, true, true, true)
 
 	// give listener time to start up
 	time.Sleep(500 * time.Millisecond)
@@ -150,7 +150,7 @@ func TestProyWithMockV2Peer(t *testing.T) {
 	/*
 		only to use the convenient SendV1Message() / RecvV1Message() functions
 	*/
-	c := NewConnectionHandler(wire.MainNet, "", nil, false, false, false)
+	c := NewConnectionHandler(wire.MainNet, "", nil, false, false, false, false)
 
 	ourVersionMessage := getVersionMsg()
 	if err := c.SendV1Message(nc, ourVersionMessage); err != nil {

@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
+
 	"github.com/lnliz/bitcoin-bip324-proxy/fschacha20"
 )
 

@@ -2,10 +2,13 @@ package transport
 
 import (
 	"fmt"
+	"github.com/rs/zerolog/log"
 	"net"
 )
 
 func WriteData(conn net.Conn, data []byte) error {
+	log.Trace().Msgf("WriteData len(%d)", len(data))
+
 	totalSent := 0
 	for totalSent < len(data) {
 		n, err := conn.Write(data[totalSent:])
@@ -18,6 +21,10 @@ func WriteData(conn net.Conn, data []byte) error {
 }
 
 func ReadData(nc net.Conn, length int) ([]byte, error) {
+	if length != 1 {
+		log.Trace().Msgf("ReadData len: %d", length)
+	}
+
 	payload := make([]byte, length)
 	totalBytes := 0
 	for totalBytes < length {
