@@ -59,9 +59,6 @@ func makeEmptyWireMessage(command string) (wire.Message, error) {
 	case wire.CmdHeaders:
 		msg = &wire.MsgHeaders{}
 
-	case wire.CmdAlert:
-		msg = &wire.MsgAlert{}
-
 	case wire.CmdMemPool:
 		msg = &wire.MsgMemPool{}
 
