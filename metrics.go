@@ -1,6 +1,9 @@
 package main
 
 import (
+	"sync"
+
+	"github.com/btcsuite/btcd/wire"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -33,9 +36,35 @@ var (
 	metricMessagesSent                *prometheus.CounterVec
 	metricBytesSent                   *prometheus.CounterVec
 	metricBytesReceived               *prometheus.CounterVec
+	metricsOnce                       sync.Once
+	metricsIncludePeerLabel           bool
+	metricKnownCommands               = map[string]struct{}{
+		wire.CmdVersion: {}, wire.CmdVerAck: {}, wire.CmdGetAddr: {},
+		wire.CmdAddr: {}, wire.CmdAddrV2: {}, wire.CmdGetBlocks: {},
+		wire.CmdInv: {}, wire.CmdGetData: {}, wire.CmdNotFound: {},
+		wire.CmdBlock: {}, wire.CmdTx: {}, wire.CmdGetHeaders: {},
+		wire.CmdHeaders: {}, wire.CmdPing: {}, wire.CmdPong: {},
+		wire.CmdMemPool: {}, wire.CmdFilterAdd: {}, wire.CmdFilterClear: {},
+		wire.CmdFilterLoad: {}, wire.CmdMerkleBlock: {}, wire.CmdReject: {},
+		wire.CmdSendHeaders: {}, wire.CmdFeeFilter: {}, wire.CmdGetCFilters: {},
+		wire.CmdGetCFHeaders: {}, wire.CmdGetCFCheckpt: {}, wire.CmdCFilter: {},
+		wire.CmdCFHeaders: {}, wire.CmdCFCheckpt: {}, wire.CmdSendAddrV2: {},
+		wire.CmdWTxIdRelay: {},
+		"blocktxn":         {}, "cmpctblock": {}, "getblocktxn": {}, "sendcmpct": {},
+		"uproof": {}, "getuproof": {}, "uttls": {}, "getuttls": {},
+		"usummary": {}, "utreexotx": {}, "uroot": {}, "geturoot": {},
+		"feature": {},
+	}
 )
 
 func initMetrics(metricsInclPeerInfo bool) {
+	metricsOnce.Do(func() {
+		initMetricsOnce(metricsInclPeerInfo)
+	})
+}
+
+func initMetricsOnce(metricsInclPeerInfo bool) {
+	metricsIncludePeerLabel = metricsInclPeerInfo
 	lbls := []string{"version", "command", "interface"}
 	if metricsInclPeerInfo {
 		lbls = append(lbls, "peer")
@@ -93,7 +122,8 @@ func initMetrics(metricsInclPeerInfo bool) {
 	prometheus.MustRegister(metricBytesReceived)
 }
 
-func (c *ConnectionHandler) metricMsgReceived(v string, cmd string, iface string) {
+func (c *ConnectionHandler) metricMsgReceived(v string, cmd string, iface string, payloadBytes int) {
+	cmd = metricCommandLabel(cmd)
 	c.log.Trace().Str("cmd", cmd).Str("version", v).Str("iface", iface).Msg("metricMsgReceived")
 	lbls := prometheus.Labels{
 		"version":   v,
@@ -104,9 +134,11 @@ func (c *ConnectionHandler) metricMsgReceived(v string, cmd string, iface string
 		lbls["peer"] = c.peerRemoteAddr
 	}
 	metricMessagesReceived.With(lbls).Inc()
+	metricBytesReceived.With(lbls).Add(float64(payloadBytes))
 }
 
-func (c *ConnectionHandler) metricMsgSent(v string, cmd string, iface string) {
+func (c *ConnectionHandler) metricMsgSent(v string, cmd string, iface string, payloadBytes int) {
+	cmd = metricCommandLabel(cmd)
 	c.log.Trace().Str("cmd", cmd).Str("version", v).Str("iface", iface).Msg("metricMsgSent")
 	lbls := prometheus.Labels{
 		"interface": iface,
@@ -117,4 +149,12 @@ func (c *ConnectionHandler) metricMsgSent(v string, cmd string, iface string) {
 		lbls["peer"] = c.peerRemoteAddr
 	}
 	metricMessagesSent.With(lbls).Inc()
+	metricBytesSent.With(lbls).Add(float64(payloadBytes))
+}
+
+func metricCommandLabel(command string) string {
+	if _, known := metricKnownCommands[command]; known {
+		return command
+	}
+	return "other"
 }

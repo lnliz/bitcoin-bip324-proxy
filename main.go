@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,19 +17,31 @@ import (
 
 var (
 	/*
-	   Mainnet: 0xD9B4BEF9
-	   Testnet: 0x0709110B
-	   Signet:  0x40CF030A
-	   Regtest: 0xDAB5BFFA
+		   Mainnet: 0xD9B4BEF9
+			   Testnet3: 0x0709110B
+			   Testnet4: 0x283F161C
+			   Signet:   0x40CF030A
+			   Regtest:  0xDAB5BFFA
 	*/
-	NetMagicSignet wire.BitcoinNet = 0x40CF030A
-	btcNetworkMap                  = map[string]wire.BitcoinNet{
-		"mainnet": wire.MainNet,
-		"testnet": wire.TestNet3,
-		"signet":  NetMagicSignet,
-		"regtest": wire.TestNet,
+	btcNetworkMap = map[string]wire.BitcoinNet{
+		"mainnet":  wire.MainNet,
+		"testnet":  wire.TestNet3,
+		"testnet3": wire.TestNet3,
+		"testnet4": wire.TestNet4,
+		"signet":   wire.SigNet,
+		"regtest":  wire.TestNet,
 	}
 )
+
+func parsePeers(value string) []string {
+	var peers []string
+	for _, peer := range strings.Split(value, ",") {
+		if peer = strings.TrimSpace(peer); peer != "" {
+			peers = append(peers, peer)
+		}
+	}
+	return peers
+}
 
 func startProxyListener(name string, addr string, peer string, btcNet wire.BitcoinNet, v1ProtoOnly bool, v2ProtoOnly bool, metricsInclPeerInfo bool, appendUserAgentString bool) {
 	laddr, err := net.ResolveTCPAddr("tcp", addr)
@@ -41,7 +54,7 @@ func startProxyListener(name string, addr string, peer string, btcNet wire.Bitco
 		log.Fatal().Err(err).Msg("Error starting proxy server")
 
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	log.Info().Msgf("Listening on %s as %s", addr, name)
 
@@ -71,7 +84,7 @@ func main() {
 	flagDebugLogLevel := flag.Bool("debug", false, "set log level to debug")
 	flagTraceLogLevel := flag.Bool("trace", false, "set log level to trace")
 
-	flagNetwork := flag.String("network", "mainnet", "the bitcoin network to use, options: mainnet, testnet, signet, regtest")
+	flagNetwork := flag.String("network", "mainnet", "the bitcoin network to use, options: mainnet, testnet, testnet3, testnet4, signet, regtest")
 	flagProxyAddr := flag.String("addr", "127.0.0.1:8324", "local proxy addr for listen for v1 messages")
 	flagMetricsAddr := flag.String("metrics-addr", "127.0.0.1:9333", "http addr for expose prometheus metrics")
 	flagMetricsInclPeerInfo := flag.Bool("metrics-incl-peer-info", false, "metrics-incl-peer-info")
@@ -85,6 +98,9 @@ func main() {
 	flagPeersPort := flag.Int("peers-listen-port", 38400, "peers-listen-port")
 
 	flag.Parse()
+	if *flagV1ProtocolOnly && *flagV2ProtocolOnly {
+		log.Fatal().Msg("--v1-only and --v2-only cannot be used together")
+	}
 
 	// Default level for this example is info, unless flagDebugLogLevel flag is present
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
@@ -97,35 +113,43 @@ func main() {
 
 	btcNet, found := btcNetworkMap[*flagNetwork]
 	if !found {
-		log.Info().Msgf("invalid network: %s", *flagNetwork)
-		return
+		log.Fatal().Msgf("invalid network: %s", *flagNetwork)
 	}
 
-	if flagMetricsAddr != nil && *flagMetricsAddr != "" {
-		initMetrics(*flagMetricsInclPeerInfo)
+	initMetrics(*flagMetricsInclPeerInfo)
+	if *flagMetricsAddr != "" {
 		go func() {
 			log.Info().Msgf("metrics listen addr: %s", *flagMetricsAddr)
-			http.Handle("/metrics", promhttp.Handler())
-			if err := http.ListenAndServe(*flagMetricsAddr, nil); err != nil {
-				log.Fatal().Err(err).Msg("http.ListenAndServe")
+			mux := http.NewServeMux()
+			mux.Handle("/metrics", promhttp.Handler())
+			server := &http.Server{
+				Addr:              *flagMetricsAddr,
+				Handler:           mux,
+				ReadHeaderTimeout: 5 * time.Second,
+			}
+			if err := server.ListenAndServe(); err != nil {
+				log.Fatal().Err(err).Msg("metrics server")
 			}
 		}()
 	}
 
-	peers := strings.Split(*flagPeersList, ",")
-	if len(peers) > 0 && *flagPeersAddr != "" && *flagPeersPort > 0 {
+	peers := parsePeers(*flagPeersList)
+	if len(peers) > 0 && *flagPeersAddr != "" {
+		if *flagPeersPort <= 0 || *flagPeersPort > 65535 {
+			log.Fatal().Msgf("invalid peers listen port: %d", *flagPeersPort)
+		}
+		if len(peers)-1 > 65535-*flagPeersPort {
+			log.Fatal().Msgf("peer listeners starting at %d exceed port 65535", *flagPeersPort)
+		}
 		port := *flagPeersPort
 		for _, peer := range peers {
 			peer = strings.TrimSpace(peer)
 			if len(peer) > 0 {
-				addr := fmt.Sprintf("%s:%d", *flagPeersAddr, port)
+				addr := net.JoinHostPort(*flagPeersAddr, strconv.Itoa(port))
 				name := fmt.Sprintf("direct proxy to %s", peer)
-				go func(a string, p string) {
-					startProxyListener(name, a, p, btcNet, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo, *flagAppendUserAgent)
-				}(addr, peer)
+				go startProxyListener(name, addr, peer, btcNet, *flagV1ProtocolOnly, *flagV2ProtocolOnly, *flagMetricsInclPeerInfo, *flagAppendUserAgent)
 
 				port += 1
-				time.Sleep(100 * time.Millisecond)
 			}
 		}
 	}

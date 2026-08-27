@@ -5,11 +5,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	bip324_transport "github.com/lnliz/bitcoin-bip324-proxy/transport"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -32,11 +33,16 @@ type ConnectionHandler struct {
 
 	appendUserAgentString bool
 
-	connLocal net.Conn
+	connLocal  net.Conn
+	dialRemote func(string) (net.Conn, error)
 }
 
 const (
-	proxyUserAgent = "bip324-proxy:0.1"
+	proxyUserAgentName    = "bip324-proxy"
+	proxyUserAgentVersion = "0.1"
+	remoteDialTimeout     = 10 * time.Second
+	v2HandshakeTimeout    = 30 * time.Second
+	localVersionTimeout   = 30 * time.Second
 )
 
 var (
@@ -44,6 +50,7 @@ var (
 )
 
 func NewConnectionHandler(btcNet wire.BitcoinNet, useRemoteAddr string, nc net.Conn, v1ProtoOnly bool, v2ProtoOnly bool, metricsInclPeerInfo bool, appendUserAgentString bool) *ConnectionHandler {
+	initMetrics(metricsInclPeerInfo)
 	nm := make([]byte, 4)
 	binary.LittleEndian.PutUint32(nm, uint32(btcNet))
 	return &ConnectionHandler{
@@ -52,10 +59,13 @@ func NewConnectionHandler(btcNet wire.BitcoinNet, useRemoteAddr string, nc net.C
 		connLocal:             nc,
 		v1ProtocolOnly:        v1ProtoOnly,
 		v2ProtocolOnly:        v2ProtoOnly,
-		metricsInclPeer:       metricsInclPeerInfo,
+		metricsInclPeer:       metricsIncludePeerLabel,
 		appendUserAgentString: appendUserAgentString,
 		btcNet:                btcNet,
 		btcNetBytes:           nm,
+		dialRemote: func(address string) (net.Conn, error) {
+			return net.DialTimeout("tcp", address, remoteDialTimeout)
+		},
 	}
 }
 
@@ -68,11 +78,11 @@ func (c *ConnectionHandler) Infof(msg string, args ...interface{}) {
 }
 
 func (c *ConnectionHandler) Debugf(msg string, args ...interface{}) {
-	log.Debug().Msgf(msg, args...)
+	c.log.Debug().Msgf(msg, args...)
 }
 
 func (c *ConnectionHandler) Tracef(msg string, args ...interface{}) {
-	log.Trace().Msgf(msg, args...)
+	c.log.Trace().Msgf(msg, args...)
 }
 
 func (c *ConnectionHandler) InitTransport(peerConn net.Conn) error {
@@ -81,48 +91,56 @@ func (c *ConnectionHandler) InitTransport(peerConn net.Conn) error {
 	return err
 }
 
+func (c *ConnectionHandler) dial(address string) (net.Conn, error) {
+	if c.dialRemote != nil {
+		return c.dialRemote(address)
+	}
+	return net.DialTimeout("tcp", address, remoteDialTimeout)
+}
+
 func (c *ConnectionHandler) handleLocalConnection() {
+	if c.connLocal == nil {
+		c.Infof("local connection is nil")
+		return
+	}
+	if c.v1ProtocolOnly && c.v2ProtocolOnly {
+		c.Infof("v1-only and v2-only cannot both be enabled")
+		_ = c.connLocal.Close()
+		return
+	}
+
 	defer func() {
 		c.Infof("closing %s", c.connLocal.RemoteAddr())
-		c.connLocal.Close()
+		_ = c.connLocal.Close()
+	}()
+	defer func() {
+		if c.transport != nil {
+			c.transport.Destroy()
+			c.transport = nil
+		}
 	}()
 
 	c.Infof("handleLocalConnection, local: %s", c.connLocal.RemoteAddr())
 	c.Infof("handleLocalConnection, remote upstream: %s", c.useRemoteAddr)
 
-	v1VersionSuffix := []byte("version\x00\x00\x00\x00\x00")
-	v1Prefix := append(c.btcNetBytes, v1VersionSuffix...)
-
-	var header []byte
-	for len(header) < len(v1Prefix) {
-		oneByte, err := bip324_transport.ReadData(c.connLocal, 1)
-		if err != nil {
-			c.Infof("read err: %s", err)
-			return
-		}
-		header = append(header, oneByte...)
-		if len(header) < len(v1Prefix) {
-			continue
-		}
-
-		if !bytes.Equal(header, v1Prefix) {
-			c.Infof("V1 prefix mismatch after %d bytes (expected %x got %x), close connection.\n", len(header), v1Prefix, header)
-			return
-		}
-	}
-
-	remainingHeaderBytesLen := v1HeaderLength - len(header)
-	remainingBytes, err := bip324_transport.ReadData(c.connLocal, remainingHeaderBytesLen)
-	if err != nil {
-		c.Infof("read remaining header bytes err: %s", err)
+	if err := c.connLocal.SetReadDeadline(time.Now().Add(localVersionTimeout)); err != nil {
+		c.Infof("failed to set local version deadline: %s", err)
 		return
 	}
 
-	header = append(header, remainingBytes...)
+	header, err := bip324_transport.ReadData(c.connLocal, v1HeaderLength)
+	if err != nil {
+		c.Infof("read initial v1 header: %s", err)
+		return
+	}
 
-	v1WireMsg, _, _, err := c.RecvV1MessageWithHeader(header, c.connLocal)
+	v1WireMsg, firstCommand, firstPayload, err := c.RecvV1MessageWithHeader(header, c.connLocal)
 	if err != nil {
 		c.Infof("c.RecvV1MessageWithHeader() err: %s", err)
+		return
+	}
+	if err := c.connLocal.SetReadDeadline(time.Time{}); err != nil {
+		c.Infof("failed to clear local version deadline: %s", err)
 		return
 	}
 
@@ -131,8 +149,12 @@ func (c *ConnectionHandler) handleLocalConnection() {
 		c.Infof("first message needs to be VERSION, found: %s", v1WireMsg.Command())
 		return
 	}
+	firstMessage := &bip324_transport.P2pMessage{
+		Type:    firstCommand,
+		Payload: firstPayload,
+	}
 
-	remoteAddr := fmt.Sprintf("%s:%d", v1DecodedVersionMsg.AddrYou.IP.String(), v1DecodedVersionMsg.AddrYou.Port)
+	remoteAddr := net.JoinHostPort(v1DecodedVersionMsg.AddrYou.IP.String(), fmt.Sprintf("%d", v1DecodedVersionMsg.AddrYou.Port))
 	if c.useRemoteAddr != "" {
 		c.Infof("using upstream: %s", c.useRemoteAddr)
 		remoteAddr = c.useRemoteAddr
@@ -143,47 +165,75 @@ func (c *ConnectionHandler) handleLocalConnection() {
 	c.Infof("localUserAgent: %s ", v1DecodedVersionMsg.UserAgent)
 
 	if c.appendUserAgentString {
-		v1DecodedVersionMsg.UserAgent = fmt.Sprintf("%s%s/", v1DecodedVersionMsg.UserAgent, proxyUserAgent)
+		if err := v1DecodedVersionMsg.AddUserAgent(proxyUserAgentName, proxyUserAgentVersion); err != nil {
+			c.Infof("failed to append proxy user agent: %s", err)
+			return
+		}
 		c.Debugf("Using user agent %s", v1DecodedVersionMsg.UserAgent)
-		v1WireMsg = v1DecodedVersionMsg
+
+		modifiedPayload, err := replaceVersionUserAgent(firstMessage.Payload, v1DecodedVersionMsg.UserAgent)
+		if err != nil {
+			c.Infof("failed to modify version user agent: %s", err)
+			return
+		}
+		firstMessage.Payload = modifiedPayload
 	}
 
-	peerConn, err := net.Dial("tcp", remoteAddr)
+	peerConn, err := c.dial(remoteAddr)
 	if err != nil {
-		metricProxyConnectionsOutErrors.WithLabelValues("v2").Inc()
+		protocol := "v2"
+		if c.v1ProtocolOnly {
+			protocol = "v1"
+		}
+		metricProxyConnectionsOutErrors.WithLabelValues(protocol).Inc()
 		c.Infof("Error connecting to destination: %s", err)
 		return
 	}
-	defer peerConn.Close()
+	defer func() {
+		if peerConn != nil {
+			_ = peerConn.Close()
+		}
+	}()
 	c.Infof("Remote client connected")
 	c.log = c.log.With().Str("peer", remoteAddr).Logger()
 
-	if err := c.InitTransport(peerConn); err != nil {
-		c.Infof("c.InitTransport err: %s", err)
-		return
-	}
-
 	c.peerRemoteAddr = remoteAddr
 
-	gotV2Connection := true
+	gotV2Connection := false
 	if c.v1ProtocolOnly {
 		c.Infof("forcing v1-only connection")
-		gotV2Connection = false
 	} else {
+		if err := c.InitTransport(peerConn); err != nil {
+			c.Infof("c.InitTransport err: %s", err)
+			return
+		}
+		gotV2Connection = true
 		c.Infof("try V2Handshake")
 
-		if err := c.transport.V2Handshake(); err != nil {
-			gotV2Connection = false
-			c.Infof("transport.V2Handshake() err: %s", err)
+		handshakeErr := peerConn.SetDeadline(time.Now().Add(v2HandshakeTimeout))
+		if handshakeErr != nil {
+			handshakeErr = fmt.Errorf("set v2 handshake deadline: %w", handshakeErr)
+		} else {
+			handshakeErr = c.transport.V2Handshake()
+			if err := peerConn.SetDeadline(time.Time{}); err != nil && handshakeErr == nil {
+				handshakeErr = fmt.Errorf("clear v2 handshake deadline: %w", err)
+			}
+		}
 
-			peerConn.Close()
+		if handshakeErr != nil {
+			gotV2Connection = false
+			c.Infof("transport.V2Handshake() err: %s", handshakeErr)
+			c.transport.Destroy()
+			c.transport = nil
+
+			_ = peerConn.Close()
 			if c.v2ProtocolOnly {
-				c.Infof("v2-only connection - disconencting")
+				c.Infof("v2-only connection - disconnecting")
 				return
 			}
 
 			// reconnect for a v1<->v1 only connection
-			peerConn, err = net.Dial("tcp", remoteAddr)
+			peerConn, err = c.dial(remoteAddr)
 			if err != nil {
 				metricProxyConnectionsOutErrors.WithLabelValues("v1").Inc()
 				c.Infof("failed to re-connect")
@@ -193,11 +243,6 @@ func (c *ConnectionHandler) handleLocalConnection() {
 
 			metricProxyConnectionsV1Fallbacks.WithLabelValues().Inc()
 			c.Infof("falling back to v1")
-
-			if err := c.SendV1Message(peerConn, v1WireMsg); err != nil {
-				c.Infof("Send v1 message err: %s", err)
-				return
-			}
 		}
 	}
 
@@ -205,23 +250,57 @@ func (c *ConnectionHandler) handleLocalConnection() {
 		c.Infof("V2Handshake successful - starting v2 connection")
 		metricProxyConnectionsOut.WithLabelValues("v2").Inc()
 
-		if err := c.transport.SendV2Message(v1WireMsg); err != nil {
+		if err := c.transport.SendV2MessageBuf(firstMessage.Type, firstMessage.Payload); err != nil {
 			c.Infof("c.SendV2Message(lastV1Message) err: %s", err)
 			return
 		}
 
-		c.v2MainLoop()
+		c.v2MainLoop(peerConn)
 	} else {
 		c.Infof("Starting v1 connection")
 		metricProxyConnectionsOut.WithLabelValues("v1").Inc()
 
-		if err := c.SendV1Message(peerConn, v1WireMsg); err != nil {
+		if err := c.SendV1MessageBytes(peerConn, firstMessage); err != nil {
 			c.Infof("SendV1Message err: %s", err)
 			return
 		}
 
 		c.v1MainLoop(peerConn)
 	}
+}
+
+func replaceVersionUserAgent(payload []byte, userAgent string) ([]byte, error) {
+	// version, services, timestamp, AddrYou, AddrMe, and nonce occupy 80
+	// bytes. A user-agent field can only be present after all of them.
+	const userAgentOffset = 80
+	if len(payload) < userAgentOffset {
+		return nil, fmt.Errorf("version payload has no user-agent field")
+	}
+
+	oldUserAgentEnd := userAgentOffset
+	oldLength := uint64(0)
+	if len(payload) > userAgentOffset {
+		remaining := bytes.NewReader(payload[userAgentOffset:])
+		var err error
+		oldLength, err = wire.ReadVarInt(remaining, wire.ProtocolVersion)
+		if err != nil {
+			return nil, fmt.Errorf("read user-agent length: %w", err)
+		}
+		if oldLength > uint64(remaining.Len()) {
+			return nil, fmt.Errorf("user-agent length %d exceeds remaining version payload %d", oldLength, remaining.Len())
+		}
+		lengthFieldSize := len(payload[userAgentOffset:]) - remaining.Len()
+		oldUserAgentEnd += lengthFieldSize + int(oldLength)
+	}
+
+	var modified bytes.Buffer
+	modified.Grow(len(payload) - int(oldLength) + len(userAgent) + wire.MaxVarIntPayload)
+	_, _ = modified.Write(payload[:userAgentOffset])
+	if err := wire.WriteVarString(&modified, wire.ProtocolVersion, userAgent); err != nil {
+		return nil, fmt.Errorf("write user agent: %w", err)
+	}
+	_, _ = modified.Write(payload[oldUserAgentEnd:])
+	return modified.Bytes(), nil
 }
 
 func (c *ConnectionHandler) SendV1Message(nc net.Conn, m wire.Message) error {
@@ -231,50 +310,94 @@ func (c *ConnectionHandler) SendV1Message(nc net.Conn, m wire.Message) error {
 }
 
 func (c *ConnectionHandler) RecvV1MessageWithHeader(header []byte, nc net.Conn) (wire.Message, string, []byte, error) {
+	if len(header) != v1HeaderLength {
+		return nil, "", nil, fmt.Errorf("invalid v1 header length: got %d, want %d", len(header), v1HeaderLength)
+	}
 	if !bytes.Equal(header[0:4], c.btcNetBytes) {
 		return nil, "", nil, fmt.Errorf("invalid net magic bytes")
 	}
+	command, err := bip324_transport.DecodeCommand(header[4:16])
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("invalid v1 command: %w", err)
+	}
+	if command != wire.CmdVersion {
+		return nil, "", nil, fmt.Errorf("first message needs to be VERSION, found: %s", command)
+	}
+	length := binary.LittleEndian.Uint32(header[16:20])
+	maxVersionPayload := (&wire.MsgVersion{}).MaxPayloadLength(wire.ProtocolVersion)
+	if length > maxVersionPayload {
+		return nil, "", nil, fmt.Errorf("version payload is too large: %d > %d", length, maxVersionPayload)
+	}
 
-	length := int(binary.LittleEndian.Uint32(header[16:20]))
-	payload, err := bip324_transport.ReadData(nc, length)
+	p2pMessage, err := c.recvV1P2pMessageWithHeader(header, nc)
 	if err != nil {
 		return nil, "", nil, err
 	}
 
-	// Checksum
-	receivedChecksum := header[20:24]
-	calculatedChecksum := chainhash.DoubleHashB(payload)[0:4]
-	if !bytes.Equal(receivedChecksum, calculatedChecksum) {
-		return nil, "", nil, fmt.Errorf("checksum mismatch")
-	}
-
-	msgCmd := string(bytes.TrimRight(header[4:16], "\x00"))
-	c.Tracef("RecvV1MessageWithHeader() cmd: %s", msgCmd)
-	v1Msg, err := bip324_transport.DecodeWireMessageFromBuf(msgCmd, payload)
+	c.Tracef("RecvV1MessageWithHeader() cmd: %s", p2pMessage.Type)
+	version := &wire.MsgVersion{}
+	payloadReader := bytes.NewBuffer(p2pMessage.Payload)
+	err = version.BtcDecode(payloadReader, wire.ProtocolVersion, wire.LatestEncoding)
 	if err != nil {
-		c.Tracef("DecodeWireMessageFromBuf msgCmd: %s   err: %s", msgCmd, err)
-		/*
-			we failed to decode the buffer into a wire message
-			but can still return "payload" to the caller
-		*/
-		return nil, msgCmd, payload, err
+		c.Tracef("decode initial version err: %s", err)
+		return nil, p2pMessage.Type, p2pMessage.Payload, err
+	}
+	// Unknown trailing version fields are preserved in p2pMessage.Payload. The
+	// current fields are only decoded so the proxy can select its destination.
+	return version, p2pMessage.Type, p2pMessage.Payload, nil
+}
+
+func (c *ConnectionHandler) recvV1P2pMessageWithHeader(header []byte, nc net.Conn) (*bip324_transport.P2pMessage, error) {
+	if len(header) != v1HeaderLength {
+		return nil, fmt.Errorf("invalid v1 header length: got %d, want %d", len(header), v1HeaderLength)
+	}
+	if nc == nil {
+		return nil, fmt.Errorf("connection is nil")
+	}
+	if !bytes.Equal(header[0:4], c.btcNetBytes) {
+		return nil, fmt.Errorf("invalid net magic bytes")
 	}
 
-	return v1Msg, msgCmd, payload, nil
+	length := binary.LittleEndian.Uint32(header[16:20])
+	if length > wire.MaxMessagePayload {
+		return nil, fmt.Errorf("v1 payload is too large: %d > %d", length, wire.MaxMessagePayload)
+	}
+
+	msgCmd, err := bip324_transport.DecodeCommand(header[4:16])
+	if err != nil {
+		return nil, fmt.Errorf("invalid v1 command: %w", err)
+	}
+
+	payload, err := bip324_transport.ReadData(nc, int(length))
+	if err != nil {
+		return nil, err
+	}
+
+	receivedChecksum := header[20:24]
+	calculatedChecksum := bip324_transport.DoubleHashB(payload)[0:4]
+	if !bytes.Equal(receivedChecksum, calculatedChecksum) {
+		return nil, fmt.Errorf("checksum mismatch")
+	}
+
+	return &bip324_transport.P2pMessage{Type: msgCmd, Payload: payload}, nil
 }
 
 func (c *ConnectionHandler) RecvV1Message(conn net.Conn) (wire.Message, string, []byte, error) {
-	/*
-	   not using wire.ReadMessage, it parses and validates the buffer payload and
-	   doesn't know about messages like "wtxidrelay"
-	*/
+	p2pMessage, err := c.recvV1P2pMessage(conn)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	v1Msg, err := bip324_transport.DecodeWireMessageFromBuf(p2pMessage.Type, p2pMessage.Payload)
+	return v1Msg, p2pMessage.Type, p2pMessage.Payload, err
+}
+
+func (c *ConnectionHandler) recvV1P2pMessage(conn net.Conn) (*bip324_transport.P2pMessage, error) {
 	header, err := bip324_transport.ReadData(conn, v1HeaderLength)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("Error reading header: %w", err)
+		return nil, fmt.Errorf("error reading header: %w", err)
 	}
 	c.Tracef("RecvV1Message() header received")
-
-	return c.RecvV1MessageWithHeader(header, conn)
+	return c.recvV1P2pMessageWithHeader(header, conn)
 }
 
 func (c *ConnectionHandler) v1MainLoop(remoteConn net.Conn) {
@@ -282,141 +405,124 @@ func (c *ConnectionHandler) v1MainLoop(remoteConn net.Conn) {
 	c.mainLoop(false, remoteConn)
 }
 
-func (c *ConnectionHandler) v2MainLoop() {
+func (c *ConnectionHandler) v2MainLoop(remoteConn net.Conn) {
 	c.Infof("v2MainLoop")
-	c.mainLoop(true, nil)
+	c.mainLoop(true, remoteConn)
 }
 
-type P2pMessage struct {
-	cmd string
-	buf []byte
-}
-
-func (m *P2pMessage) EncodeAsV1() []byte {
-	var res []byte
-	res = append(res, []byte(m.cmd)...)
-	res = append(res, make([]byte, 12-len(m.cmd))...)
-
-	payloadLen := uint32(len(m.buf))
-	lenBytes := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBytes, payloadLen)
-	res = append(res, lenBytes...)
-
-	payloadHash := chainhash.DoubleHashB(m.buf)
-	res = append(res, payloadHash[:4]...)
-	res = append(res, m.buf...)
-
-	return res
-}
-
-func (c *ConnectionHandler) SendV1MessageBytes(nc net.Conn, m *P2pMessage) error {
-	buf := append(c.btcNetBytes, m.EncodeAsV1()...)
+func (c *ConnectionHandler) SendV1MessageBytes(nc net.Conn, m *bip324_transport.P2pMessage) error {
+	encoded, err := m.EncodeAsV1()
+	if err != nil {
+		return err
+	}
+	buf := make([]byte, 0, len(c.btcNetBytes)+len(encoded))
+	buf = append(buf, c.btcNetBytes...)
+	buf = append(buf, encoded...)
 	c.Tracef("SendV1MessageBytes sending len(buf) bytes: %d", len(buf))
 	return bip324_transport.WriteData(nc, buf)
 }
 
-func (c *ConnectionHandler) mainLoop(remoteIsV2 bool, v1RemotePeerCon net.Conn) {
-	chanSendToLocal := make(chan P2pMessage)
-	chanSendToRemote := make(chan P2pMessage)
-	errChan := make(chan error)
-
+func (c *ConnectionHandler) mainLoop(remoteIsV2 bool, remotePeerConn net.Conn) {
 	remoteProtoVersion := "v1"
 	if remoteIsV2 {
 		remoteProtoVersion = "v2"
 	}
 
+	type relayEvent struct {
+		msg       *bip324_transport.P2pMessage
+		fromLocal bool
+		err       error
+	}
+
+	events := make(chan relayEvent, 2)
+	done := make(chan struct{})
+	var readers sync.WaitGroup
+	readers.Add(2)
+	defer func() {
+		close(done)
+		_ = c.connLocal.Close()
+		if remotePeerConn != nil {
+			_ = remotePeerConn.Close()
+		}
+		readers.Wait()
+	}()
+
+	forwardEvent := func(event relayEvent) bool {
+		select {
+		case events <- event:
+			return true
+		case <-done:
+			return false
+		}
+	}
+
 	go func() {
+		defer readers.Done()
 		for {
-			var m P2pMessage
+			var m *bip324_transport.P2pMessage
 			var err error
 
 			if remoteIsV2 {
-				_, m.cmd, m.buf, err = c.transport.RecvV2Message()
+				m, err = c.transport.RecvV2P2pMessage()
 			} else {
-				_, m.cmd, m.buf, err = c.RecvV1Message(v1RemotePeerCon)
+				m, err = c.recvV1P2pMessage(remotePeerConn)
 			}
 
-			/*
-				err == wire.ErrUnknownMessage can happen when the btcd code
-				doesn't know the message like for "wtxidrelay"
-				for that case continue anyway as we have the payload buffer
-			*/
-			if err != nil && err != wire.ErrUnknownMessage {
-				c.Infof("receive message err: %s", err)
-				errChan <- err
-				close(chanSendToLocal)
+			if err != nil {
+				forwardEvent(relayEvent{err: err})
 				return
 			}
-			c.metricMsgReceived(remoteProtoVersion, m.cmd, "remote")
+			c.metricMsgReceived(remoteProtoVersion, m.Type, "remote", len(m.Payload))
 
-			chanSendToLocal <- m
+			if !forwardEvent(relayEvent{msg: m}) {
+				return
+			}
 		}
 	}()
 
 	go func() {
+		defer readers.Done()
 		for {
-			var err error
-			var m P2pMessage
-			if _, m.cmd, m.buf, err = c.RecvV1Message(c.connLocal); err != nil {
-				c.Infof("c.RecvV1Message(c.connLocal) err: %s", err)
-				errChan <- err
-				close(chanSendToRemote)
+			m, err := c.recvV1P2pMessage(c.connLocal)
+			if err != nil {
+				forwardEvent(relayEvent{fromLocal: true, err: err})
 				return
 			}
-			c.metricMsgReceived("v1", m.cmd, "local")
-			chanSendToRemote <- m
+			c.metricMsgReceived("v1", m.Type, "local", len(m.Payload))
+			if !forwardEvent(relayEvent{msg: m, fromLocal: true}) {
+				return
+			}
 		}
 	}()
 
 	for {
-		shouldExit := false
-		select {
-		case msg, ok := <-chanSendToLocal:
-			if !ok {
-				c.Infof("chanSendToLocal closed")
-				errChan <- fmt.Errorf("chanSendToLocal closed")
-				break
-			}
+		event := <-events
+		if event.err != nil {
+			c.Infof("main loop receive error: %s", event.err)
+			return
+		}
 
-			if err := c.SendV1MessageBytes(c.connLocal, &msg); err != nil {
-				c.Infof("SendV1Message() err: %s", err)
-				errChan <- err
-				break
-			}
-			c.metricMsgSent("v1", msg.cmd, "local")
-
-		case msg, ok := <-chanSendToRemote:
-			if !ok {
-				c.Infof("chanSendToRemote closed")
-				errChan <- fmt.Errorf("chanSendToRemote closed")
-				break
-			}
+		msg := event.msg
+		if event.fromLocal {
 			if remoteIsV2 {
-				if err := c.transport.SendV2MessageBuf(msg.cmd, msg.buf); err != nil {
-					c.Infof("SendV2Message(connRemote) err: %s", err)
-					errChan <- err
-					break
+				if err := c.transport.SendV2MessageBuf(msg.Type, msg.Payload); err != nil {
+					c.Infof("send v2 message to remote: %s", err)
+					return
 				}
 			} else {
-				if err := c.SendV1MessageBytes(v1RemotePeerCon, &msg); err != nil {
-					c.Infof("SendV1Message() err: %s", err)
-					errChan <- err
-					break
+				if err := c.SendV1MessageBytes(remotePeerConn, msg); err != nil {
+					c.Infof("send v1 message to remote: %s", err)
+					return
 				}
 			}
-			c.metricMsgSent(remoteProtoVersion, msg.cmd, "remote")
+			c.metricMsgSent(remoteProtoVersion, msg.Type, "remote", len(msg.Payload))
+			continue
+		}
 
-		case err := <-errChan:
-			if err != nil {
-				c.Infof("mainloop err: %s", err)
-				shouldExit = true
-				break
-			}
+		if err := c.SendV1MessageBytes(c.connLocal, msg); err != nil {
+			c.Infof("send v1 message to local: %s", err)
+			return
 		}
-		if shouldExit {
-			break
-		}
+		c.metricMsgSent("v1", msg.Type, "local", len(msg.Payload))
 	}
-
-	c.Infof("mainloop Done")
 }

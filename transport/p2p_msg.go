@@ -1,43 +1,11 @@
 package transport
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-)
 
-var (
-	shortMsgTypeCodes = map[string]byte{
-		"addr":         1,
-		"block":        2,
-		"blocktxn":     3,
-		"cmpctblock":   4,
-		"feefilter":    5,
-		"filteradd":    6,
-		"filterclear":  7,
-		"filterload":   8,
-		"getblocks":    9,
-		"getblocktxn":  10,
-		"getdata":      11,
-		"getheaders":   12,
-		"headers":      13,
-		"inv":          14,
-		"mempool":      15,
-		"merkleblock":  16,
-		"notfound":     17,
-		"ping":         18,
-		"pong":         19,
-		"sendcmpct":    20,
-		"tx":           21,
-		"getcfilters":  22,
-		"cfilter":      23,
-		"getcfheaders": 24,
-		"cfheaders":    25,
-		"getcfcheckpt": 26,
-		"cfcheckpt":    27,
-		"addrv2":       28,
-	}
+	"github.com/btcsuite/btcd/wire"
 )
 
 type P2pMessage struct {
@@ -46,58 +14,93 @@ type P2pMessage struct {
 }
 
 func NewP2pMessageFromV2Buffer(msg []byte) (*P2pMessage, error) {
-	var res P2pMessage
-	code := msg[0]
-	if code >= 1 && int(code) <= len(shortMsgTypeCodes) {
-		t := ""
-		for k, v := range shortMsgTypeCodes {
-			if code == v {
-				t = k
-				break
+	cmd, payload, err := decodeV2MessageType(msg)
+	if err != nil {
+		return nil, err
+	}
+
+	return &P2pMessage{
+		Type:    cmd,
+		Payload: payload,
+	}, nil
+}
+
+func (m *P2pMessage) EncodeAsV1() ([]byte, error) {
+	if m == nil {
+		return nil, fmt.Errorf("p2p message is nil")
+	}
+	return EncodeV1Message(m.Type, m.Payload)
+}
+
+func (m *P2pMessage) EncodeAsV2() ([]byte, error) {
+	if m == nil {
+		return nil, fmt.Errorf("p2p message is nil")
+	}
+	return EncodeBufAsV2(m.Type, m.Payload)
+}
+
+// EncodeV1Message returns a v1 command, length, checksum, and payload. Network
+// magic is intentionally left to the caller.
+func EncodeV1Message(command string, payload []byte) ([]byte, error) {
+	if err := validateCommand(command); err != nil {
+		return nil, err
+	}
+	if len(payload) > wire.MaxMessagePayload {
+		return nil, fmt.Errorf("payload is too large: %d > %d", len(payload), wire.MaxMessagePayload)
+	}
+
+	result := make([]byte, wire.CommandSize+8+len(payload))
+	copy(result[:wire.CommandSize], command)
+	binary.LittleEndian.PutUint32(result[wire.CommandSize:wire.CommandSize+4], uint32(len(payload)))
+	checksum := DoubleHashB(payload)
+	copy(result[wire.CommandSize+4:wire.CommandSize+8], checksum[:4])
+	copy(result[wire.CommandSize+8:], payload)
+	return result, nil
+}
+
+// DecodeCommand validates and removes the zero padding from a v1 command field.
+func DecodeCommand(field []byte) (string, error) {
+	if len(field) != wire.CommandSize {
+		return "", fmt.Errorf("command field must be %d bytes, got %d", wire.CommandSize, len(field))
+	}
+
+	end := len(field)
+	for i, b := range field {
+		if b == 0 {
+			end = i
+			for _, padding := range field[i:] {
+				if padding != 0 {
+					return "", fmt.Errorf("command has non-zero bytes after its terminator")
+				}
 			}
+			break
 		}
-		if t == "" {
-			return nil, fmt.Errorf("didn't find msgType for code: %d", code)
+		if b < 0x20 || b > 0x7e {
+			return "", fmt.Errorf("command contains non-printable ASCII byte 0x%02x", b)
 		}
-
-		res.Type = t
-		res.Payload = msg[1:]
-	} else {
-		res.Type = string(bytes.TrimRight(msg[1:13], "\x00"))
-		res.Payload = msg[13:]
 	}
 
-	return &res, nil
-}
-
-func (m *P2pMessage) EncodeAsV1() []byte {
-	var res []byte
-	res = append(res, []byte(m.Type)...)
-	res = append(res, make([]byte, 12-len(m.Type))...)
-
-	payloadLen := uint32(len(m.Payload))
-	lenBytes := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBytes, payloadLen)
-	res = append(res, lenBytes...)
-
-	payloadHash := DoubleHashB(m.Payload)
-	res = append(res, payloadHash[:4]...)
-	res = append(res, m.Payload...)
-
-	return res
-}
-
-func (m *P2pMessage) EncodeAsV2() []byte {
-	var res []byte
-	if code, found := shortMsgTypeCodes[m.Type]; found {
-		res = append([]byte{code}, m.Payload...)
-	} else {
-		// todo: replace with better make() and copy()
-		res = append([]byte{0}, []byte(m.Type)...)
-		res = append(res, make([]byte, 12-len(m.Type))...)
-		res = append(res, m.Payload...)
+	command := string(field[:end])
+	if err := validateCommand(command); err != nil {
+		return "", err
 	}
-	return res
+	return command, nil
+}
+
+func decodeCommand(field []byte) (string, error) {
+	return DecodeCommand(field)
+}
+
+func validateCommand(command string) error {
+	if len(command) > wire.CommandSize {
+		return fmt.Errorf("command %q is too long: %d > %d", command, len(command), wire.CommandSize)
+	}
+	for i := range command {
+		if command[i] < 0x20 || command[i] > 0x7e {
+			return fmt.Errorf("command %q contains non-printable ASCII byte 0x%02x", command, command[i])
+		}
+	}
+	return nil
 }
 
 // DoubleHashB calculates hash(hash(b)) and returns the resulting bytes.

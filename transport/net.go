@@ -2,11 +2,16 @@ package transport
 
 import (
 	"fmt"
-	"github.com/rs/zerolog/log"
+	"io"
 	"net"
+
+	"github.com/rs/zerolog/log"
 )
 
 func WriteData(conn net.Conn, data []byte) error {
+	if conn == nil {
+		return fmt.Errorf("connection is nil")
+	}
 	log.Trace().Msgf("WriteData len(%d)", len(data))
 
 	totalSent := 0
@@ -15,29 +20,29 @@ func WriteData(conn net.Conn, data []byte) error {
 		if err != nil {
 			return err
 		}
+		if n <= 0 || n > len(data)-totalSent {
+			return io.ErrShortWrite
+		}
 		totalSent += n
 	}
 	return nil
 }
 
 func ReadData(nc net.Conn, length int) ([]byte, error) {
+	if nc == nil {
+		return nil, fmt.Errorf("connection is nil")
+	}
+	if length < 0 {
+		return nil, fmt.Errorf("negative read length: %d", length)
+	}
 	if length != 1 {
 		log.Trace().Msgf("ReadData len: %d", length)
 	}
 
 	payload := make([]byte, length)
-	totalBytes := 0
-	for totalBytes < length {
-		readBuf := make([]byte, 1)
-		nn, err := nc.Read(readBuf)
-		if err != nil {
-			return nil, err
-		}
-		if nn != len(readBuf) {
-			return nil, fmt.Errorf("length mismatch")
-		}
-		payload[totalBytes] = readBuf[0]
-		totalBytes++
+	_, err := io.ReadFull(nc, payload)
+	if err != nil {
+		return nil, err
 	}
 	return payload, nil
 }

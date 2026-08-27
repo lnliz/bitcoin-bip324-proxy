@@ -1,75 +1,53 @@
-# bip324_transport
+# BIP324 transport
 
-## V2Transport
+`V2Transport` supports both initiator and responder roles. A transport and its
+connection are one-shot: call `V2Handshake` once, use packet or message methods
+only after it succeeds, and call `Destroy` after the connection is closed.
 
+## Initiator
 
-### V2 Client Example
+```go
+transport, err := NewTransport(conn, uint32(wire.MainNet), true)
+if err != nil {
+    return err
+}
+defer transport.Destroy()
 
-See `tryV2Handshake` in [proxy.go](../proxy.go)
-
+if err := transport.V2Handshake(); err != nil {
+    return err
+}
+if err := transport.SendV2Message(wire.NewMsgPing(nonce)); err != nil {
+    return err
+}
 ```
-import (
 
-    ...
+## Responder
 
-	bip324_transport "github.com/lnliz/bitcoin-bip324-proxy/transport"
-)
+```go
+transport, err := NewTransport(conn, uint32(wire.MainNet), false)
+if err != nil {
+    return err
+}
+defer transport.Destroy()
 
-
-    transport, err := bip324_transport.NewTransport(remoteNonn, NetMagicMainnet)
-    if err != nil {
-        ...
+if err := transport.V2Handshake(); err != nil {
+    if errors.Is(err, ErrV1Handshake) {
+        prefix := transport.ReceivedPrefix()
+        // Continue v1 handling with the already-consumed 16-byte prefix.
+        _ = prefix
     }
-
-    // true -> initiating the connection    
-	if err := transport.V2Handshake(true); err != nil {
-        ...
-    }
-
-	if err := transport.SendV2Message(msg); err != nil {
-		c.Logf("c.SendV2Message(msg) err: %s", err)
-		return err
-	}
-
-    ...
-
-
+    return err
+}
 ```
 
+`RecvV2Message` decodes payloads into btcd `wire.Message` values. Transparent
+relays should use `RecvV2P2pMessage` and `SendV2MessageBuf`; those methods retain
+unknown and future application payloads without requiring local typed support.
 
-
-### V2 Server Example
-
-See `v2ConnectionHandler` in [proxy_test.go](../proxy_test.go)
-
-```
-import (
-
-    ...
-
-	"github.com/btcsuite/btcd/wire"
-
-	bip324_transport "github.com/lnliz/bitcoin-bip324-proxy/transport"
-)
-
-	transport, err := bip324_transport.NewTransport(conn, NetMagicMainnet)
-	if err != nil {
-        ...
-	}
-
-	if err := transport.V2Handshake(false); err != nil {
-        ...
-	}
-
-	versionMsg := wire.NewMsgVersion( .... )
-
-	if err := transport.SendV2Message(versionMsg); err != nil {
-        ...
-	}
-
-	msg, err := transport.RecvV2Message()
-	if err != nil {
-        ...
-	}
-
-```
+The package serializes concurrent packet sends and receives independently. It
+does not set network deadlines; callers own connection timeout policy. Any
+error from a packet send or receive is fatal to that channel because cipher
+state may already have advanced, so close the connection instead of retrying.
+Likewise, a handshake error requires closing the connection except when a
+responder receives `ErrV1Handshake` and deliberately continues as v1 using the
+bytes returned by `ReceivedPrefix`.

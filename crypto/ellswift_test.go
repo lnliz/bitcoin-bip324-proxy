@@ -6,11 +6,21 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	secp "github.com/decred/dcrd/dcrec/secp256k1/v4"
 )
 
+func TestTaggedHash(t *testing.T) {
+	tag := "bip324_ellswift_xonly_ecdh"
+	data := []byte("tagged-hash-test")
+	want := chainhash.TaggedHash([]byte(tag), data)
+	if got := TaggedHash(tag, data); !bytes.Equal(got, want[:]) {
+		t.Fatalf("TaggedHash = %x, want %x", got, want[:])
+	}
+}
+
 func TestXSwiftECInv(t *testing.T) {
-	testRecords := readCsvFile("xswiftec_inv_test_vectors.csv")
+	testRecords := readCsvFile(t, "xswiftec_inv_test_vectors.csv")
 	for _, row := range testRecords[1:] {
 		u := getFieldVal(row[0])
 		x := getFieldVal(row[1])
@@ -38,7 +48,7 @@ func TestXSwiftECInv(t *testing.T) {
 					}
 
 					if !got.Equals(want) {
-						t.Fatalf("omg, got: %s   wanted: %s", got.String(), want.String())
+						t.Fatalf("XSwiftECInv = %s, want %s", got.String(), want.String())
 					}
 				},
 			)
@@ -47,7 +57,7 @@ func TestXSwiftECInv(t *testing.T) {
 }
 
 func TestXSwiftEC(t *testing.T) {
-	testRecords := readCsvFile("ellswift_decode_test_vectors.csv")
+	testRecords := readCsvFile(t, "ellswift_decode_test_vectors.csv")
 	for _, row := range testRecords[1:] {
 		t.Run(row[0],
 			func(t *testing.T) {
@@ -109,19 +119,23 @@ func TestEllswiftEcdhXonly(t *testing.T) {
 			want:           "eea33d81f071db1302466ad96b4526a358d0c4cbcdea5e51d7423356bc918ce5",
 		},
 	} {
-		t.Run(fmt.Sprintf("%s", tst.want), func(t *testing.T) {
+		t.Run(tst.want, func(t *testing.T) {
 			pubkeyTheirs := mustDecodeHexStringToBytes(tst.inPubKeyTheirs)
 			privkeyBytes := mustDecodeHexStringToBytes(tst.inPrivKeyStr)
 			privKey := secp.PrivKeyFromBytes(privkeyBytes)
 
-			ex, err := NewEllswiftExchangeFromKeys(privKey, GetEllswiftPubKey(privKey.PubKey()))
+			ourPubKey, err := GetEllswiftPubKey(privKey.PubKey())
+			if err != nil {
+				t.Fatalf("GetEllswiftPubKey err: %s", err)
+			}
+			ex, err := NewEllswiftExchangeFromKeys(privKey, ourPubKey)
 			if err != nil {
 				t.Fatalf("NewEllswiftExchangeFromKeys err: %s", err)
 			}
 
 			res, err := ex.EllswiftEcdhXonly(pubkeyTheirs)
 			if err != nil {
-				t.Errorf("omg no: %s", err)
+				t.Fatalf("EllswiftEcdhXonly: %s", err)
 			}
 			got := hex.EncodeToString(res)
 
@@ -129,6 +143,84 @@ func TestEllswiftEcdhXonly(t *testing.T) {
 				t.Errorf("not matching")
 			}
 		})
+	}
+}
+
+func TestGetEllswiftPubKeyRoundTrip(t *testing.T) {
+	for i := 1; i <= 20; i++ {
+		t.Run(fmt.Sprintf("privkey-%d", i), func(t *testing.T) {
+			privKeyBytes := make([]byte, 32)
+			privKeyBytes[31] = byte(i)
+			privKey := secp.PrivKeyFromBytes(privKeyBytes)
+
+			encoded, err := GetEllswiftPubKey(privKey.PubKey())
+			if err != nil {
+				t.Fatalf("GetEllswiftPubKey err: %s", err)
+			}
+			if len(encoded) != EllswiftPubKeyLength {
+				t.Fatalf("GetEllswiftPubKey length = %d, want %d", len(encoded), EllswiftPubKeyLength)
+			}
+
+			gotX, err := ellswiftDecodePubkey(encoded)
+			if err != nil {
+				t.Fatalf("ellswiftDecodePubkey err: %s", err)
+			}
+
+			var wantX secp.FieldVal
+			wantX.SetByteSlice(privKey.PubKey().X().Bytes())
+			if !gotX.Normalize().Equals(wantX.Normalize()) {
+				t.Fatalf("decoded X mismatch, got: %s want: %s", gotX.String(), wantX.String())
+			}
+		})
+	}
+}
+
+func TestEllswiftDecodeDoesNotMutateInputs(t *testing.T) {
+	var u, encodedT secp.FieldVal
+	u.SetInt(0)
+	encodedT.SetInt(0)
+	uBefore := u
+	tBefore := encodedT
+
+	if _, err := XSwiftEC(&u, &encodedT); err != nil {
+		t.Fatalf("XSwiftEC err: %s", err)
+	}
+	if u != uBefore || encodedT != tBefore {
+		t.Fatalf("XSwiftEC mutated its input field elements")
+	}
+}
+
+func TestGetEllswiftPubKeyRejectsNil(t *testing.T) {
+	if _, err := GetEllswiftPubKey(nil); err == nil {
+		t.Fatalf("GetEllswiftPubKey accepted nil public key")
+	}
+}
+
+func TestNewEllswiftExchangeFromKeysValidatesInputs(t *testing.T) {
+	privKeyBytes := make([]byte, 32)
+	privKeyBytes[31] = 1
+	privKey := secp.PrivKeyFromBytes(privKeyBytes)
+
+	if _, err := NewEllswiftExchangeFromKeys(nil, make([]byte, EllswiftPubKeyLength)); err == nil {
+		t.Fatalf("NewEllswiftExchangeFromKeys accepted nil private key")
+	}
+
+	if _, err := NewEllswiftExchangeFromKeys(privKey, make([]byte, EllswiftPubKeyLength-1)); err == nil {
+		t.Fatalf("NewEllswiftExchangeFromKeys accepted short ellswift public key")
+	}
+
+	otherPrivKeyBytes := make([]byte, 32)
+	otherPrivKeyBytes[31] = 2
+	otherPubKey, err := GetEllswiftPubKey(secp.PrivKeyFromBytes(otherPrivKeyBytes).PubKey())
+	if err != nil {
+		t.Fatalf("GetEllswiftPubKey err: %s", err)
+	}
+	if _, err := NewEllswiftExchangeFromKeys(privKey, otherPubKey); err == nil {
+		t.Fatalf("NewEllswiftExchangeFromKeys accepted a mismatched key pair")
+	}
+
+	if _, err := NewEllswiftExchangeFromKeys(secp.PrivKeyFromBytes(nil), make([]byte, EllswiftPubKeyLength)); err == nil {
+		t.Fatalf("NewEllswiftExchangeFromKeys accepted a zero private key")
 	}
 }
 
@@ -163,7 +255,7 @@ func TestEllswiftComputeSharedSecret(t *testing.T) {
 			want:           "25b5d91bb6cddc01d1e46bff58aab6f0dc66c1929abc98c22cf424ec0aff57a5",
 		},
 	} {
-		t.Run(fmt.Sprintf("%s", tst.want), func(t *testing.T) {
+		t.Run(tst.want, func(t *testing.T) {
 
 			pubkeyTheirs := mustDecodeHexStringToBytes(tst.inPubKeyTheirs)
 			pubkeyOurs := mustDecodeHexStringToBytes(tst.inPubKeyOurs)
@@ -178,7 +270,7 @@ func TestEllswiftComputeSharedSecret(t *testing.T) {
 
 			res, err := ex.ComputeSharedSecret(pubkeyTheirs, tst.init)
 			if err != nil {
-				t.Errorf("omg no: %s", err)
+				t.Fatalf("NewEllswiftExchangeFromKeys: %s", err)
 			}
 			got := hex.EncodeToString(res)
 
@@ -235,12 +327,12 @@ func TestEllswiftExchangeComputeSharedSecret(t *testing.T) {
 
 			ex, err := NewEllswiftExchangeFromKeys(secp.PrivKeyFromBytes(privkeyBytes), pubkeyOurs)
 			if err != nil {
-				t.Errorf("omg no: %s", err)
+				t.Fatalf("NewEllswiftExchangeFromKeys: %s", err)
 			}
 
 			sharedSecret, err := ex.ComputeSharedSecret(pubkeyTheirs, tst.isInit)
 			if err != nil {
-				t.Errorf("omg no: %s", err)
+				t.Fatalf("ComputeSharedSecret: %s", err)
 			}
 
 			got := hex.EncodeToString(sharedSecret)
@@ -262,17 +354,37 @@ func TestEllswiftAliceAndBob(t *testing.T) {
 		t.Errorf("Bob EllswiftCreate() err: %s", err)
 	}
 
-	sharedSecretAlice, err := exAlice.ComputeSharedSecret(exBob.ellswiftPubKey, true)
+	sharedSecretAlice, err := exAlice.ComputeSharedSecret(exBob.ellswiftPubKey[:], true)
 	if err != nil {
 		t.Errorf("Alice bip324_ecdh() err: %s", err)
 	}
 
-	sharedSecretBob, err := exBob.ComputeSharedSecret(exAlice.ellswiftPubKey, false)
+	sharedSecretBob, err := exBob.ComputeSharedSecret(exAlice.ellswiftPubKey[:], false)
 	if err != nil {
 		t.Fatalf("Bob bip324_ecdh() err: %s", err)
 	}
 
 	if !bytes.Equal(sharedSecretAlice, sharedSecretBob) {
-		t.Logf("expected shared secrets to match, got \nsharedSecretAlice: %#v \nsharedSecretBob:   %#v", sharedSecretAlice, sharedSecretBob)
+		t.Fatalf("expected shared secrets to match, got \nsharedSecretAlice: %#v \nsharedSecretBob:   %#v", sharedSecretAlice, sharedSecretBob)
 	}
+}
+
+func FuzzEllswiftDecode(f *testing.F) {
+	f.Add(make([]byte, EllswiftPubKeyLength))
+	f.Add(bytes.Repeat([]byte{0xff}, EllswiftPubKeyLength))
+	f.Add(mustDecodeHexStringToBytes("e8c09ba317c60087009b55d8a5badd0795f8926747c3fef405da799a82968c6def85ca36770eb73ffd8572ce2b4dcc6869a4b388d1d32d914114e4ff06cb8601"))
+
+	f.Fuzz(func(t *testing.T, encoded []byte) {
+		if len(encoded) != EllswiftPubKeyLength {
+			return
+		}
+		x, err := ellswiftDecodePubkey(encoded)
+		if err != nil {
+			t.Fatalf("valid-length ElligatorSwift encoding failed to decode: %s", err)
+		}
+		ySquared := new(secp.FieldVal).SquareVal(x).Mul(x).AddInt(7)
+		if !new(secp.FieldVal).SquareRootVal(ySquared) {
+			t.Fatalf("ElligatorSwift decoded to an x coordinate off the curve")
+		}
+	})
 }

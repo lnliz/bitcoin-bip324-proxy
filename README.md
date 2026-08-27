@@ -1,73 +1,78 @@
 # bitcoin-bip324-proxy
 
-allow bip324 v2 connections for bitcoin clients that don't support bip324 yet
-
-More [BIP-324 information](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki)
-
-
-
-### architecture
+`bitcoin-bip324-proxy` lets a local Bitcoin P2P client that speaks v1 connect
+to remote peers over the encrypted [BIP324 v2 transport](https://github.com/bitcoin/bips/blob/master/bip-0324.mediawiki).
+Application messages are relayed without interpreting their payloads.
 
 ```
-Clients (local) <--> bitcoin-bip324-proxy <--> External p2p peers (remote)
+local v1 client <-> bitcoin-bip324-proxy <-> remote v2 (or fallback v1) peer
 ```
 
+## Security model
 
-### how to build
+BIP324 encrypts and authenticates transport bytes, but it does not authenticate
+the peer's identity. The default retry behavior can be downgraded to v1 by an
+active attacker; use `--v2-only` when fallback is unacceptable.
 
+The default listener is loopback-only. Without `--peers`, the proxy uses the
+`AddrYou` value in the local client's first `version` message as its outbound
+target. Do not expose that listener to untrusted clients unless this routing
+behavior is intended.
+
+See [BIP324_AUDIT.md](BIP324_AUDIT.md) for the protocol compliance review,
+test evidence, fixed defects, and remaining limitations.
+
+## Build and test
+
+Go 1.25 or newer is required.
+
+```sh
+go build ./...
+go test ./...
+go test -race ./...
 ```
-go build .
+
+To run the live regtest interoperability check against an installed Bitcoin
+Core daemon:
+
+```sh
+BIP324_BITCOIND="$(command -v bitcoind)" go test ./transport -run '^TestInteropWithBitcoinCore$'
 ```
 
+## Run
 
-### how to run
+The default command listens for local v1 connections on `127.0.0.1:8324` and
+exports Prometheus metrics on `127.0.0.1:9333`:
 
-#### simple:
-```
+```sh
 ./bitcoin-bip324-proxy
-{"level":"info","message":"metrics listen addr: 127.0.0.1:9333"}
-{"level":"info","message":"Listening on 127.0.0.1:8324 as proxy server"}
-```
-this will start proxy and listen on localhost:8324
-patch your client to always connect to the proxy at port 8324 for peer connections 
-and the proxy will route to the real peer address, trying v2 protocol
-
-
-#### explicit peers
-```
-./bitcoin-bip324-proxy --peers=12.34.56.78:8333,45.67.78.98:8333
-{"level":"info","message":"metrics listen addr: 127.0.0.1:9333"}
-{"level":"info","message":"Listening on 127.0.0.1:38400 as direct proxy to 12.34.56.78:8333"}
-{"level":"info","message":"Listening on 127.0.0.1:38401 as direct proxy to 45.67.78.98:8333"}
-{"level":"info","message":"Listening on 127.0.0.1:8324 as proxy server"}
 ```
 
-this will work like simple example above and in addition listen on two more ports.
-now your client can use "proxy:38400 as a peer address and all traffic will get routed to the real peer "12.34.56.78:8333".
-same with port 38401, it will route all traffic to real peer "45.67.78.98:8333"
+For fixed remote peers, the proxy creates consecutive local listeners starting
+at port 38400:
 
-in this way no patching of client is needed but the downside is that the list of peers is static.
-possible improvement idea: keep listen ports static (so you can configure peers in client) but route to dynamic list of peers that is refreshing 
+```sh
+./bitcoin-bip324-proxy \
+  --peers=12.34.56.78:8333,45.67.78.98:8333
+```
 
+Useful options:
 
-### packages
+- `--v2-only`: require BIP324 and disable v1 fallback.
+- `--v1-only`: use v1 upstream without attempting BIP324.
+- `--network=mainnet|testnet|testnet3|testnet4|signet|regtest`: select network
+  magic (`testnet` is an alias for testnet3).
+- `--append-proxy-user-agent`: append `/bip324-proxy:0.1/` to the relayed
+  initial version user agent while preserving optional version fields.
+- `--metrics-addr=`: disable the metrics listener.
+- `--metrics-incl-peer-info`: add an outbound peer label. This can create
+  unbounded metric cardinality when targets are not fixed.
 
-- crypto
-  - ellswift pub key and encrypt/decrypt primitives
-- fschacha20
-  - FSChaCha20 and FSChaCha20Poly1305 for stream encryption
-- transport
-  - v2Handshake to set up v2 bip324 server or client connection
+## Packages
 
+- `crypto`: ElligatorSwift key exchange, BIP324 HKDF state, and packet cipher.
+- `fschacha20`: the forward-secure ChaCha20 and ChaCha20-Poly1305 wrappers.
+- `transport`: handshake, packet framing, v2 application framing, and raw relay
+  APIs.
 
-### todo
-
-- still lots to do :-)
-- replace lots of the ugly code in crypto package
-- more metrics
-- more tests
-- docker image
-- ...
-
-
-The exporter is heavily based on [the python version of the proxy by theStack](https://github.com/theStack/bip324-proxy).
+The proxy design was based on [theStack's Python BIP324 proxy](https://github.com/theStack/bip324-proxy).

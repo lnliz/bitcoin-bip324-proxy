@@ -1,31 +1,18 @@
-# bip324_crypto
+# BIP324 cryptography
 
-## EllswiftExchange
+This package implements BIP324 ElligatorSwift key exchange, tagged x-only ECDH,
+HKDF key derivation, garbage terminators, session IDs, and encrypted packets.
+ElligatorSwift arithmetic and ECDH are delegated to btcd's maintained
+`btcec/v2/ellswift` implementation; local key generation additionally enforces
+the BIP324 uniform non-zero `u` sampling requirement.
 
-Example:
-```
-    privkeyBytes := []byte{...}
-    pubkeyOurs := []byte{...}
-    pubkeyTheirs := []byte{...}
+`Bip324Cipher.Init` is one-shot. `Destroy` performs best-effort clearing of
+reachable key material, subject to the limitations of Go's garbage-collected
+runtime and standard cryptographic APIs. A cipher is stateful and not internally
+synchronized; direct callers must serialize each direction and must not race
+`Init` or `Destroy` with packet operations. `transport.V2Transport` provides
+that packet serialization for normal network use.
 
-    ex, err := NewEllswiftExchangeFromKeys(secp256k1.PrivKeyFromBytes(privkeyBytes), pubkeyOurs)
-    if err != nil {
-        return err
-    }
-
-    sharedSecret, err := ex.ComputeSharedSecret(pubkeyTheirs, tst.isInit)
-    if err != nil {
-        return err
-    }
-
-    // sharedSecret is the shared secret used for encrypting the session
-
-```
-
-
-
-
-## Test Vectors
-
-Test vector csv files from:
-https://github.com/bitcoin/bips/blob/e2f7481a132e1c5863f5ffcbff009964d7c2af20/bip-0324.mediawiki#test-vectors
+The checked-in CSV files are the official BIP324 decoding, inverse, and packet
+encoding vectors. Their provenance and checksums are recorded in
+[`../BIP324_AUDIT.md`](../BIP324_AUDIT.md).

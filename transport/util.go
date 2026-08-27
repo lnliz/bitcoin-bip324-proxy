@@ -20,6 +20,9 @@ func makeEmptyWireMessage(command string) (wire.Message, error) {
 	case wire.CmdSendAddrV2:
 		msg = &wire.MsgSendAddrV2{}
 
+	case wire.CmdWTxIdRelay:
+		msg = &wire.MsgWTxIdRelay{}
+
 	case wire.CmdGetAddr:
 		msg = &wire.MsgGetAddr{}
 
